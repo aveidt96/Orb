@@ -64,6 +64,13 @@ const els = {
   resChips: document.getElementById("res-chips"),
   resVideo: document.getElementById("res-video"),
   resImage: document.getElementById("res-image"),
+  resHudImage: document.getElementById("res-hud-image"),
+  resClahePreviewImage: document.getElementById("res-clahe-preview-image"),
+  resPreviewSwitcher: document.getElementById("res-preview-switcher"),
+  previewTabOriginal: document.getElementById("preview-tab-original"),
+  previewTabHud: document.getElementById("preview-tab-hud"),
+  previewTabClahe: document.getElementById("preview-tab-clahe"),
+  resPreviewCaption: document.getElementById("res-preview-caption"),
   resPreviewCard: document.getElementById("res-preview-card"),
   resAnalysisCard: document.getElementById("res-analysis-card"),
   resAnalysis: document.getElementById("res-analysis"),
@@ -71,6 +78,10 @@ const els = {
   resOpencvBadges: document.getElementById("res-opencv-badges"),
   resOpencvActionsWrap: document.getElementById("res-opencv-actions-wrap"),
   resOpencvActions: document.getElementById("res-opencv-actions"),
+  resOpencvHudWrap: document.getElementById("res-opencv-hud-wrap"),
+  resOpencvHudToggle: document.getElementById("res-opencv-hud-toggle"),
+  resOpencvHudView: document.getElementById("res-opencv-hud-view"),
+  resOpencvHudImg: document.getElementById("res-opencv-hud-img"),
   resOpencvClaheWrap: document.getElementById("res-opencv-clahe-wrap"),
   resOpencvClaheToggle: document.getElementById("res-opencv-clahe-toggle"),
   resOpencvClaheView: document.getElementById("res-opencv-clahe-view"),
@@ -789,6 +800,55 @@ function fmtTime(seconds) {
   return `${Number(seconds).toFixed(1)}s`;
 }
 
+let currentPreviewHasVideo = false;
+let currentPreviewHasImage = false;
+
+export function setPreviewMode(mode) {
+  const showOriginal = mode === "original";
+  const showHud = mode === "hud";
+  const showClahe = mode === "clahe";
+
+  if (els.resVideo) {
+    if (!showOriginal && !els.resVideo.paused && typeof els.resVideo.pause === "function") {
+      try { els.resVideo.pause(); } catch {}
+    }
+    els.resVideo.classList.toggle("hidden", !(showOriginal && currentPreviewHasVideo));
+  }
+  if (els.resImage) {
+    els.resImage.classList.toggle("hidden", !(showOriginal && currentPreviewHasImage));
+  }
+  if (els.resHudImage) {
+    els.resHudImage.classList.toggle("hidden", !showHud);
+  }
+  if (els.resClahePreviewImage) {
+    els.resClahePreviewImage.classList.toggle("hidden", !showClahe);
+  }
+
+  const tabs = [
+    [els.previewTabOriginal, showOriginal],
+    [els.previewTabHud, showHud],
+    [els.previewTabClahe, showClahe],
+  ];
+  for (const [tab, active] of tabs) {
+    if (!tab) continue;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  }
+
+  if (els.resPreviewCaption) {
+    if (showHud) {
+      els.resPreviewCaption.textContent = "OpenCV 5.0 Vision HUD · Canny edge contours, Rule-of-Thirds & saliency center reticle, Hough structural lines, Farnebäck optical flow vectors, and k-means palette burn-in.";
+      els.resPreviewCaption.classList.remove("hidden");
+    } else if (showClahe) {
+      els.resPreviewCaption.textContent = "OpenCV CLAHE Shadow Recovery · LAB L-channel adaptive histogram equalization (clipLimit=2.5, 8×8 grid) passed alongside original reference.";
+      els.resPreviewCaption.classList.remove("hidden");
+    } else {
+      els.resPreviewCaption.textContent = "";
+      els.resPreviewCaption.classList.add("hidden");
+    }
+  }
+}
+
 export function renderResult(result) {
   forgetPaidJob();
   for (const url of privateMediaUrls) URL.revokeObjectURL(url);
@@ -798,6 +858,7 @@ export function renderResult(result) {
   const video = result.video || {};
   const image = result.image || {};
   const media = result.image || result.video || {};
+  const cv = result.opencv_telemetry || null;
   const operation = result.operation || currentMode;
   els.resTitle.textContent = media.name || (operation === "enhance" ? "Enhanced prompt" : "Visual reference");
   els.resEyebrow.textContent = operation === "decode" ? "Decoded reference" : operation === "compose" ? "Composed from reference" : "Enhanced prompt";
@@ -819,7 +880,13 @@ export function renderResult(result) {
     els.resChips.appendChild(span);
   }
 
-  els.resPreviewCard.classList.toggle("hidden", !media.preview_url);
+  currentPreviewHasVideo = Boolean(video.preview_url);
+  currentPreviewHasImage = Boolean(image.preview_url);
+  const hasHud = Boolean(cv?.hud_preview_url);
+  const hasClahe = Boolean(cv?.clahe_preview_url);
+  const hasAnyPreview = Boolean(media.preview_url || hasHud || hasClahe);
+
+  els.resPreviewCard.classList.toggle("hidden", !hasAnyPreview);
   if (video.preview_url) {
     if (creditMode !== "credits") els.resVideo.src = apiUrl(video.preview_url);
     els.resVideo.classList.remove("hidden");
@@ -827,6 +894,23 @@ export function renderResult(result) {
   else { els.resVideo.removeAttribute("src"); els.resVideo.classList.add("hidden"); }
   if (image.preview_url) { if (creditMode !== "credits") els.resImage.src = apiUrl(image.preview_url); els.resImage.classList.remove("hidden"); }
   else { els.resImage.removeAttribute("src"); els.resImage.classList.add("hidden"); }
+
+  if (els.resHudImage) {
+    if (hasHud && creditMode !== "credits") els.resHudImage.src = apiUrl(cv.hud_preview_url);
+    else els.resHudImage.removeAttribute("src");
+    els.resHudImage.classList.add("hidden");
+  }
+  if (els.resClahePreviewImage) {
+    if (hasClahe && creditMode !== "credits") els.resClahePreviewImage.src = apiUrl(cv.clahe_preview_url);
+    else els.resClahePreviewImage.removeAttribute("src");
+    els.resClahePreviewImage.classList.add("hidden");
+  }
+  if (els.resPreviewSwitcher) {
+    if (els.previewTabHud) els.previewTabHud.classList.toggle("hidden", !hasHud);
+    if (els.previewTabClahe) els.previewTabClahe.classList.toggle("hidden", !hasClahe);
+    els.resPreviewSwitcher.classList.toggle("hidden", !(hasHud || hasClahe));
+    setPreviewMode("original");
+  }
 
   els.resSummary.textContent = result.summary || "";
   els.resAnalysisCard.classList.toggle("hidden", !result.visual_analysis && !result.scenes?.length);
@@ -940,7 +1024,22 @@ export function renderOpenCVTelemetry(cv) {
     }
   }
 
-  // 3. CLAHE Shadow Recovery Preview Toggle
+  // 3a. OpenCV 5.0 Vision HUD Overlay Toggle
+  if (els.resOpencvHudWrap && els.resOpencvHudImg && els.resOpencvHudView && els.resOpencvHudToggle) {
+    els.resOpencvHudView.classList.add("hidden");
+    els.resOpencvHudToggle.setAttribute("aria-expanded", "false");
+    els.resOpencvHudToggle.textContent = "View OpenCV 5.0 Vision HUD Overlay";
+    if (cv.hud_preview_url) {
+      if (creditMode !== "credits") els.resOpencvHudImg.src = apiUrl(cv.hud_preview_url);
+      else els.resOpencvHudImg.removeAttribute("src");
+      els.resOpencvHudWrap.classList.remove("hidden");
+    } else {
+      els.resOpencvHudImg.removeAttribute("src");
+      els.resOpencvHudWrap.classList.add("hidden");
+    }
+  }
+
+  // 3b. CLAHE Shadow Recovery Preview Toggle
   if (els.resOpencvClaheWrap && els.resOpencvClaheImg && els.resOpencvClaheView && els.resOpencvClaheToggle) {
     els.resOpencvClaheView.classList.add("hidden");
     els.resOpencvClaheToggle.setAttribute("aria-expanded", "false");
@@ -1021,19 +1120,24 @@ export function renderOpenCVTelemetry(cv) {
 }
 
 async function loadPrivateMedia(result) {
-  const load = async (path, node) => {
+  const load = async (path, nodes) => {
+    const targets = (Array.isArray(nodes) ? nodes : [nodes]).filter(Boolean);
+    if (!targets.length) return;
     try {
       const response = await fetchWithTimeout(apiUrl(path), { headers: wallet.headers() });
       if (!response.ok) return;
       const url = URL.createObjectURL(await response.blob());
       privateMediaUrls.push(url);
-      node.src = url;
+      for (const node of targets) node.src = url;
     } catch { /* The prompt remains usable if a preview cannot load. */ }
   };
   if (result.video?.preview_url) void load(result.video.preview_url, els.resVideo);
   if (result.image?.preview_url) void load(result.image.preview_url, els.resImage);
-  if (result.opencv_telemetry?.clahe_preview_url && els.resOpencvClaheImg) {
-    void load(result.opencv_telemetry.clahe_preview_url, els.resOpencvClaheImg);
+  if (result.opencv_telemetry?.hud_preview_url) {
+    void load(result.opencv_telemetry.hud_preview_url, [els.resHudImage, els.resOpencvHudImg]);
+  }
+  if (result.opencv_telemetry?.clahe_preview_url) {
+    void load(result.opencv_telemetry.clahe_preview_url, [els.resClahePreviewImage, els.resOpencvClaheImg]);
   }
   for (const image of els.resScenes.querySelectorAll("img[data-private-url]")) void load(image.dataset.privateUrl, image);
 }
@@ -1129,6 +1233,26 @@ els.copyPrompt.addEventListener("click", async () => {
     els.copyStatus.textContent = "Copy unavailable. Select the prompt text to copy it.";
   }
 });
+if (els.previewTabOriginal) {
+  els.previewTabOriginal.addEventListener("click", () => setPreviewMode("original"));
+}
+if (els.previewTabHud) {
+  els.previewTabHud.addEventListener("click", () => setPreviewMode("hud"));
+}
+if (els.previewTabClahe) {
+  els.previewTabClahe.addEventListener("click", () => setPreviewMode("clahe"));
+}
+if (els.resOpencvHudToggle) {
+  els.resOpencvHudToggle.addEventListener("click", () => {
+    if (!els.resOpencvHudView) return;
+    const nextHidden = !els.resOpencvHudView.classList.contains("hidden");
+    els.resOpencvHudView.classList.toggle("hidden", nextHidden);
+    els.resOpencvHudToggle.setAttribute("aria-expanded", String(!nextHidden));
+    els.resOpencvHudToggle.textContent = nextHidden
+      ? "View OpenCV 5.0 Vision HUD Overlay"
+      : "Hide OpenCV 5.0 Vision HUD Overlay";
+  });
+}
 if (els.resOpencvClaheToggle) {
   els.resOpencvClaheToggle.addEventListener("click", () => {
     if (!els.resOpencvClaheView) return;

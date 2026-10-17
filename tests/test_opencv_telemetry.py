@@ -41,6 +41,10 @@ def test_dark_low_contrast_image_triggers_clahe_agentic_action(tmp_path: Path):
     assert telemetry.clahe_enhanced_path is not None
     assert telemetry.clahe_enhanced_path.name == "opencv_clahe_enhanced.jpg"
     assert telemetry.clahe_enhanced_path.is_file()
+    assert telemetry.hud_overlay_path is not None
+    assert telemetry.hud_overlay_path.name == "opencv_hud_overlay.jpg"
+    assert telemetry.hud_overlay_path.is_file()
+    assert payload["hud_artifact"] == "opencv_hud_overlay.jpg"
 
     # Check color & lighting telemetry
     cl = payload["color_and_lighting"]
@@ -87,6 +91,9 @@ def test_video_optical_flow_detects_horizontal_pan_and_ranks_keyframes(tmp_path:
 
     assert payload["media_kind"] == "video"
     assert payload["processing_ms"] > 0.0
+    assert telemetry.hud_overlay_path is not None
+    assert telemetry.hud_overlay_path.is_file()
+    assert payload["hud_artifact"] == "opencv_hud_overlay.jpg"
     motion = payload["motion_and_continuity"]
     assert motion["frames_processed"] == 8
     assert motion["effective_fps"] > 0.0

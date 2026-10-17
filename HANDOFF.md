@@ -1726,3 +1726,23 @@ a temporary process-only model override described below.
   - Rebuilt `web_dist/` (`npm run build`), restarted FastAPI server on `127.0.0.1:8000`, and verified `GET /api/orb/credits/config`, `POST /api/orb/judge-session`, and `POST /api/orb/wallet/challenge` + `/api/orb/wallet/sign-in` across both `http://127.0.0.1:8000` and `http://localhost:8000`.
   - `pytest tests/test_orb_credits.py -q` (`20 passed`) and `vitest run web/credit-config.test.js` (`29 passed`).
 
+## 2026-10-17 — Restart Local FastAPI Server on `http://127.0.0.1:8000`
+
+- Restarted the local FastAPI preview server (`uvicorn prometheus.api.app:app --host 127.0.0.1 --port 8000`) as a persistent background daemon with `ORB_JUDGE_DEMO_CODE=OPENCV2026`, `ORB_JUDGE_DAILY_CAP=150`, `ORB_COMPUTE_ENV=AWS`, `ORB_CREDITS_ENABLED=1`, and Arbitrum Sepolia treasury `0xc855D21175D81C852E657169424FA974171394F1`.
+- Confirmed `GET /api/ready` and `GET /api/orb/credits/config` respond with `200 OK` on `http://127.0.0.1:8000`.
+
+## 2026-10-17 — OpenCV 5.0 Vision HUD (Heads-Up Display) Diagnostic Overlay & Preview Mode Switcher
+
+- **Backend OpenCV 5.0 Vision HUD Renderer (`prometheus/analysis/opencv_telemetry.py`, `prometheus/api/app.py`):**
+  - Implemented `_render_hud_overlay()` in `prometheus/analysis/opencv_telemetry.py` using OpenCV drawing primitives (`cv2.Canny`, `cv2.HoughLinesP`, `cv2.line`, `cv2.circle`, `cv2.arrowedLine`, `cv2.rectangle`, `cv2.putText`, `cv2.addWeighted`) to write `opencv_hud_overlay.jpg` into `run_dir` during `analyze_image_cv()` and on the sharpest primary keyframe in `analyze_video_cv()`:
+    1. **Subtle Darkened/Tinted Base + Canny Edge Contours:** Blends the reference frame with deep cinema-navy tint and electric-cyan `cv2.Canny` edge contours so sharp in-focus subject boundaries glow cleanly.
+    2. **Rule-of-Thirds Grid & Saliency Crosshair:** Draws Rule-of-Thirds grid lines and a target reticle (`cv2.circle` + crosshair ticks + coordinate/zone label) at the computed edge saliency center-of-mass `(x_norm, y_norm)`.
+    3. **Hough Structural Lines (`cv2.HoughLinesP`):** Overlays the top 24 structural/perspective lines in a golden/amber accent.
+    4. **Optical Flow Motion Vector Arrows (`cv2.arrowedLine`):** For video keyframes, overlays an 8×5 grid of motion vector arrows illustrating the Farnebäck dense optical flow field `(dx, dy)` and dominant camera movement.
+    5. **Top & Bottom Telemetry Burn-In Strips:** Draws semi-transparent top and bottom HUD bars displaying `OpenCV 5.0.0 HUD [compute_badge]`, lighting key, Laplacian sharpness score, edge density, dominant optical flow (if video), CLAHE status, and the 5 `cv2.kmeans` dominant color palette swatches with hex + weight labels.
+  - Added `hud_overlay_path` / `hud_artifact` to `OpenCVTelemetry` and exposed `"hud_preview_url": f"/api/jobs/{job.id}/frames/opencv_hud_overlay.jpg"` in `prometheus/api/app.py` (`_run_orb_visual_job`).
+- **Frontend Preview Mode Switcher (`web/index.html`, `web/app.js`, `web/styles.css`):**
+  - Added `#res-preview-switcher` (`Original Reference` | `OpenCV Vision HUD` | `CLAHE Shadow Recovery`) inside `#res-preview-card` plus `#res-opencv-hud-wrap` inside `#res-opencv-card`, wired to `loadPrivateMedia()` so users and judges can switch seamlessly between the original reference, the OpenCV 5.0 Vision HUD overlay, and the CLAHE shadow-recovered frame.
+- **Verification:**
+  - `pytest tests/test_opencv_telemetry.py tests/test_orb_credits.py -q` (`24 passed`), `vitest run web/opencv-telemetry.test.js web/credit-config.test.js` (`31 passed`), rebuilt `web_dist/` (`npm run build`), and restarted the local FastAPI server on `http://127.0.0.1:8000`.
+  - Staged and committed the OpenCV 5.0 Vision HUD overlay + Preview Mode Switcher changes on `main` (verified clean working tree with no `.env` or temporary files staged) and pushed `main` to `origin`.

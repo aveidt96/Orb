@@ -839,10 +839,11 @@ def create_app(
                 with stage("result_assembly"):
                     shutil.copyfile(source, run_dir / job.source_file)
                 cv_meta = payload.get("opencv_telemetry")
-                if isinstance(cv_meta, dict) and (
-                    cv_meta.get("clahe_triggered") or (run_dir / "opencv_clahe_enhanced.jpg").is_file()
-                ):
-                    cv_meta["clahe_preview_url"] = f"/api/jobs/{job.id}/frames/opencv_clahe_enhanced.jpg"
+                if isinstance(cv_meta, dict):
+                    if cv_meta.get("clahe_triggered") or (run_dir / "opencv_clahe_enhanced.jpg").is_file():
+                        cv_meta["clahe_preview_url"] = f"/api/jobs/{job.id}/frames/opencv_clahe_enhanced.jpg"
+                    if cv_meta.get("hud_artifact") or (run_dir / "opencv_hud_overlay.jpg").is_file():
+                        cv_meta["hud_preview_url"] = f"/api/jobs/{job.id}/frames/opencv_hud_overlay.jpg"
             else:
                 # Production retains prompt/analysis JSON in Postgres, not media.
                 if "video" in payload:
@@ -857,6 +858,7 @@ def create_app(
                     payload["image"].pop("preview_url", None)
                 if isinstance(payload.get("opencv_telemetry"), dict):
                     payload["opencv_telemetry"].pop("clahe_preview_url", None)
+                    payload["opencv_telemetry"].pop("hud_preview_url", None)
             payload.update({"job_id": job.id, "operation": operation,
                             "notice": "The exact original creator prompt cannot be guaranteed." if operation == "decode" else
                             "A new prompt inspired by the reference, not its original instructions.",

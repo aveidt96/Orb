@@ -111,6 +111,7 @@ class OpenCVTelemetry:
     agentic_actions: list[dict[str, Any]] = field(default_factory=list)
     cv_grounding_brief: str = ""
     clahe_enhanced_path: Path | None = None
+    hud_overlay_path: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
         fps = (
@@ -139,6 +140,8 @@ class OpenCVTelemetry:
         }
         if self.clahe_enhanced_path is not None:
             payload["clahe_artifact"] = self.clahe_enhanced_path.name
+        if self.hud_overlay_path is not None:
+            payload["hud_artifact"] = self.hud_overlay_path.name
         return payload
 
 
@@ -338,6 +341,192 @@ def _apply_clahe_recovery(bgr: np.ndarray, output_dir: Path) -> Path:
     return out_path
 
 
+def _render_hud_overlay(
+    bgr: np.ndarray,
+    output_dir: Path,
+    color_lighting: dict[str, Any],
+    geometry: dict[str, Any],
+    motion: dict[str, Any] | None = None,
+    flow_field: np.ndarray | None = None,
+    clahe_active: bool = False,
+) -> Path:
+    """Render an OpenCV 5.0 Vision HUD diagnostic overlay onto the reference frame."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    orig_h, orig_w = bgr.shape[:2]
+    max_dim = max(orig_h, orig_w)
+    if max_dim < 640:
+        scale = 640.0 / float(max(1, max_dim))
+        canvas = cv2.resize(
+            bgr,
+            (max(320, int(round(orig_w * scale))), max(240, int(round(orig_h * scale)))),
+            interpolation=cv2.INTER_CUBIC,
+        )
+    elif max_dim > 1600:
+        scale = 1600.0 / float(max_dim)
+        canvas = cv2.resize(
+            bgr,
+            (max(320, int(round(orig_w * scale))), max(240, int(round(orig_h * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+    else:
+        canvas = bgr.copy()
+
+    h, w = canvas.shape[:2]
+    # 1. Subtle darkened/cool-tinted base + electric-blue Canny edge contours
+    dark_tint = np.full_like(canvas, (30, 18, 10), dtype=np.uint8)
+    hud = cv2.addWeighted(canvas, 0.74, dark_tint, 0.26, 0.0)
+
+    gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 80, 180)
+    edge_layer = hud.copy()
+    edge_layer[edges > 0] = (255, 225, 35)  # Electric cyan in BGR
+    hud = cv2.addWeighted(hud, 0.65, edge_layer, 0.35, 0.0)
+
+    # 2. Rule-of-Thirds Grid & Hough Structural Lines (semi-transparent geometry overlay)
+    geom_layer = hud.copy()
+    x1, x2 = w // 3, (2 * w) // 3
+    y1, y2 = h // 3, (2 * h) // 3
+    grid_color = (215, 175, 95)
+    cv2.line(geom_layer, (x1, 0), (x1, h), grid_color, 1, cv2.LINE_AA)
+    cv2.line(geom_layer, (x2, 0), (x2, h), grid_color, 1, cv2.LINE_AA)
+    cv2.line(geom_layer, (0, y1), (w, y1), grid_color, 1, cv2.LINE_AA)
+    cv2.line(geom_layer, (0, y2), (w, y2), grid_color, 1, cv2.LINE_AA)
+
+    # 3. Hough Structural Lines in golden/amber accent
+    min_line_len = max(12, int(round(min(h, w) * 0.1)))
+    lines = cv2.HoughLinesP(
+        edges, 1.0, np.pi / 180.0, threshold=28, minLineLength=min_line_len, maxLineGap=12
+    )
+    if lines is not None and len(lines) > 0:
+        segs = np.asarray(lines).reshape(-1, 4)
+        lengths = np.hypot(segs[:, 2] - segs[:, 0], segs[:, 3] - segs[:, 1])
+        top_indices = np.argsort(-lengths)[:24]
+        for idx in top_indices:
+            lx1, ly1, lx2, ly2 = (int(v) for v in segs[idx])
+            cv2.line(geom_layer, (lx1, ly1), (lx2, ly2), (40, 195, 255), 2, cv2.LINE_AA)
+
+    hud = cv2.addWeighted(hud, 0.44, geom_layer, 0.56, 0.0)
+
+    # 4. Optical Flow Motion Vector Arrows (for video keyframes)
+    if flow_field is not None and flow_field.ndim == 3 and flow_field.shape[2] == 2:
+        fh, fw = flow_field.shape[:2]
+        cols, rows = 8, 5
+        margin_x = max(24, w // 12)
+        margin_y = max(48, h // 7)
+        xs = np.linspace(margin_x, w - margin_x, cols)
+        ys = np.linspace(margin_y, h - margin_y, rows)
+        arrow_scale = max(4.0, min(w, h) * 0.035)
+        max_arrow = max(18.0, min(w, h) * 0.11)
+        for gy in ys:
+            for gx in xs:
+                fi_y = min(fh - 1, max(0, int(round(gy / float(max(1, h)) * (fh - 1)))))
+                fi_x = min(fw - 1, max(0, int(round(gx / float(max(1, w)) * (fw - 1)))))
+                dx = float(flow_field[fi_y, fi_x, 0])
+                dy = float(flow_field[fi_y, fi_x, 1])
+                mag = math.hypot(dx, dy)
+                if mag < 0.05 and motion:
+                    dx = float(motion.get("mean_dx", 0.0))
+                    dy = float(motion.get("mean_dy", 0.0))
+                    mag = math.hypot(dx, dy)
+                vx = dx * arrow_scale
+                vy = dy * arrow_scale
+                vmag = math.hypot(vx, vy)
+                if vmag > max_arrow and vmag > 0:
+                    vx = vx / vmag * max_arrow
+                    vy = vy / vmag * max_arrow
+                elif vmag < 6.0 and mag > 0.02:
+                    vx = (dx / mag) * 8.0
+                    vy = (dy / mag) * 8.0
+                p1 = (int(round(gx)), int(round(gy)))
+                p2 = (int(round(gx + vx)), int(round(gy + vy)))
+                cv2.circle(hud, p1, 2, (160, 255, 80), -1, cv2.LINE_AA)
+                cv2.arrowedLine(hud, p1, p2, (140, 255, 65), 2, cv2.LINE_AA, tipLength=0.32)
+
+    # 2b. Saliency Center-of-Mass Target Reticle
+    saliency = geometry.get("saliency_center", {})
+    sx_norm = float(saliency.get("x_norm", 0.5))
+    sy_norm = float(saliency.get("y_norm", 0.5))
+    comp_zone = str(saliency.get("composition_zone", geometry.get("saliency_region", "balanced")))
+    cx = int(np.clip(round(sx_norm * w), 24, w - 24))
+    cy = int(np.clip(round(sy_norm * h), 44, h - 48))
+    r_outer = max(16, int(round(min(h, w) * 0.042)))
+    r_inner = max(6, r_outer // 2)
+    reticle_cyan = (255, 235, 55)
+    reticle_amber = (55, 205, 255)
+    cv2.circle(hud, (cx, cy), r_outer, reticle_cyan, 2, cv2.LINE_AA)
+    cv2.circle(hud, (cx, cy), r_inner, reticle_amber, 1, cv2.LINE_AA)
+    cv2.circle(hud, (cx, cy), 2, reticle_amber, -1, cv2.LINE_AA)
+    tick = r_outer + 8
+    cv2.line(hud, (cx - tick, cy), (cx - r_inner, cy), reticle_cyan, 1, cv2.LINE_AA)
+    cv2.line(hud, (cx + r_inner, cy), (cx + tick, cy), reticle_cyan, 1, cv2.LINE_AA)
+    cv2.line(hud, (cx, cy - tick), (cx, cy - r_inner), reticle_cyan, 1, cv2.LINE_AA)
+    cv2.line(hud, (cx, cy + r_inner), (cx, cy + tick), reticle_cyan, 1, cv2.LINE_AA)
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.38, min(0.62, w / 1450.0))
+    reticle_label = f"SALIENCY ({sx_norm:.2f},{sy_norm:.2f}) [{comp_zone.upper()}]"
+    tx = min(w - int(len(reticle_label) * 8 * font_scale) - 12, max(10, cx + r_outer + 8))
+    ty = max(52, min(h - 56, cy - 6))
+    cv2.putText(hud, reticle_label, (tx + 1, ty + 1), font, font_scale, (10, 12, 18), 2, cv2.LINE_AA)
+    cv2.putText(hud, reticle_label, (tx, ty), font, font_scale, reticle_cyan, 1, cv2.LINE_AA)
+
+    # 5. Top & Bottom Telemetry Burn-In Strips
+    top_h = max(34, int(round(h * 0.075)))
+    bot_h = max(38, int(round(h * 0.085)))
+    bar_layer = hud.copy()
+    cv2.rectangle(bar_layer, (0, 0), (w, top_h), (20, 13, 8), -1)
+    cv2.rectangle(bar_layer, (0, h - bot_h), (w, h), (20, 13, 8), -1)
+    hud = cv2.addWeighted(hud, 0.22, bar_layer, 0.78, 0.0)
+    cv2.line(hud, (0, top_h), (w, top_h), (235, 190, 50), 1, cv2.LINE_AA)
+    cv2.line(hud, (0, h - bot_h), (w, h - bot_h), (235, 190, 50), 1, cv2.LINE_AA)
+
+    runtime = detect_compute_runtime()
+    lighting_key = str(color_lighting.get("lighting_key", "balanced")).upper()
+    sharp_score = float(geometry.get("laplacian_sharpness", 0.0))
+    edge_pct = float(geometry.get("edge_density_pct", 0.0))
+    motion_tag = f" | FLOW: {str(motion.get('dominant_motion', '')).upper()}" if motion else ""
+    clahe_tag = "CLAHE: ACTIVE" if clahe_active else "CLAHE: NATIVE"
+    header_text = (
+        f"OpenCV {cv2.__version__} HUD [{runtime['compute_badge']}]  "
+        f"KEY: {lighting_key} | SHARP: {sharp_score:.1f} | EDGES: {edge_pct:.1f}%{motion_tag} | {clahe_tag}"
+    )
+    text_y = int(round(top_h * 0.66))
+    cv2.putText(hud, header_text, (12, text_y), font, font_scale, (245, 248, 255), 1, cv2.LINE_AA)
+
+    # Bottom bar: 5 k-means dominant color palette swatches
+    palette = color_lighting.get("dominant_colors", [])[:5]
+    swatch_x = 12
+    swatch_y1 = h - bot_h + max(6, int(round(bot_h * 0.18)))
+    swatch_y2 = h - max(6, int(round(bot_h * 0.18)))
+    swatch_w = max(18, int(round(bot_h * 0.65)))
+    for c in palette:
+        rgb = c.get("rgb", [128, 128, 128])
+        bgr_col = (int(rgb[2]), int(rgb[1]), int(rgb[0]))
+        cv2.rectangle(hud, (swatch_x, swatch_y1), (swatch_x + swatch_w, swatch_y2), bgr_col, -1)
+        cv2.rectangle(hud, (swatch_x, swatch_y1), (swatch_x + swatch_w, swatch_y2), (220, 235, 250), 1)
+        label = f"{c.get('hex', '')} ({c.get('weight_pct', 0):.0f}%)"
+        cv2.putText(
+            hud,
+            label,
+            (swatch_x + swatch_w + 5, int(round((swatch_y1 + swatch_y2) * 0.5 + 4))),
+            font,
+            max(0.34, font_scale * 0.88),
+            (225, 238, 252),
+            1,
+            cv2.LINE_AA,
+        )
+        swatch_x += swatch_w + int(round(105 * max(0.4, font_scale)))
+        if swatch_x > w - 80:
+            break
+
+    out_path = output_dir / "opencv_hud_overlay.jpg"
+    ok, encoded = cv2.imencode(".jpg", hud, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+    if not ok:
+        raise RuntimeError("OpenCV failed to encode HUD overlay image.")
+    out_path.write_bytes(encoded.tobytes())
+    return out_path
+
+
 def _build_grounding_brief(
     color_lighting: dict[str, Any],
     geometry: dict[str, Any],
@@ -416,6 +605,18 @@ def analyze_image_cv(image_path: Path | str, output_dir: Path | str | None = Non
             "artifact": None,
         })
 
+    hud_path: Path | None = None
+    if output_dir is not None:
+        hud_path = _render_hud_overlay(
+            bgr,
+            target_dir,
+            color_lighting,
+            geometry,
+            motion=None,
+            flow_field=None,
+            clahe_active=clahe_path is not None,
+        )
+
     brief = _build_grounding_brief(color_lighting, geometry, None, actions)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     return OpenCVTelemetry(
@@ -428,6 +629,7 @@ def analyze_image_cv(image_path: Path | str, output_dir: Path | str | None = Non
         agentic_actions=actions,
         cv_grounding_brief=brief,
         clahe_enhanced_path=clahe_path,
+        hud_overlay_path=hud_path,
     )
 
 
@@ -581,6 +783,8 @@ def analyze_video_cv(
 
     prev_gray: np.ndarray | None = None
     prev_hist: np.ndarray | None = None
+    accum_flow: np.ndarray | None = None
+    flow_count = 0
 
     for frame in frames:
         small = cv2.resize(frame, (flow_w, flow_h), interpolation=cv2.INTER_AREA)
@@ -593,6 +797,11 @@ def analyze_video_cv(
             flow = cv2.calcOpticalFlowFarneback(
                 prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
             )
+            if accum_flow is None:
+                accum_flow = flow.astype(np.float32)
+            else:
+                accum_flow += flow
+            flow_count += 1
             fx = flow[:, :, 0]
             fy = flow[:, :, 1]
             dx_vals.append(float(np.mean(fx)))
@@ -643,6 +852,19 @@ def analyze_video_cv(
         "keyframe_ranking": ranking_payload,
     }
 
+    hud_path: Path | None = None
+    if output_dir is not None:
+        mean_flow_field = (accum_flow / float(max(1, flow_count))) if accum_flow is not None else None
+        hud_path = _render_hud_overlay(
+            primary_bgr,
+            target_dir,
+            color_lighting,
+            geometry,
+            motion=motion_metrics,
+            flow_field=mean_flow_field,
+            clahe_active=clahe_path is not None,
+        )
+
     brief = _build_grounding_brief(color_lighting, geometry, motion_metrics, actions)
     return OpenCVTelemetry(
         opencv_version=str(cv2.__version__),
@@ -654,4 +876,5 @@ def analyze_video_cv(
         agentic_actions=actions,
         cv_grounding_brief=brief,
         clahe_enhanced_path=clahe_path,
+        hud_overlay_path=hud_path,
     )

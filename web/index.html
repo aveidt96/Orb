@@ -224,6 +224,16 @@
       <div id="res-preview-card" class="card video-card hidden">
         <video id="res-video" class="preview hidden" controls playsinline preload="metadata"></video>
         <img id="res-image" class="preview hidden" alt="Uploaded reference preview">
+        <img id="res-hud-image" class="preview hidden" alt="OpenCV 5.0 Vision HUD diagnostic overlay">
+        <img id="res-clahe-preview-image" class="preview hidden" alt="OpenCV CLAHE shadow-recovered frame">
+        <div id="res-preview-switcher" class="preview-switcher hidden" role="tablist" aria-label="Reference preview mode">
+          <div class="preview-tabs">
+            <button id="preview-tab-original" class="preview-tab active" type="button" role="tab" aria-selected="true">Original Reference</button>
+            <button id="preview-tab-hud" class="preview-tab hidden" type="button" role="tab" aria-selected="false">OpenCV Vision HUD</button>
+            <button id="preview-tab-clahe" class="preview-tab hidden" type="button" role="tab" aria-selected="false">CLAHE Shadow Recovery</button>
+          </div>
+          <small id="res-preview-caption" class="preview-caption hidden"></small>
+        </div>
       </div>
 
       <div class="result-grid">
@@ -246,6 +256,13 @@
         <div id="res-opencv-actions-wrap" class="opencv-actions-wrap hidden">
           <strong class="opencv-subhead">Autonomous Agentic Loop (Perception → Decision → Action)</strong>
           <ol id="res-opencv-actions" class="opencv-actions-list"></ol>
+        </div>
+        <div id="res-opencv-hud-wrap" class="opencv-clahe-wrap hidden">
+          <button id="res-opencv-hud-toggle" class="btn ghost opencv-clahe-btn" type="button" aria-expanded="false">View OpenCV 5.0 Vision HUD Overlay</button>
+          <div id="res-opencv-hud-view" class="opencv-clahe-view hidden">
+            <img id="res-opencv-hud-img" class="preview opencv-clahe-img" alt="OpenCV 5.0 Vision HUD diagnostic overlay">
+            <small class="opencv-clahe-caption">Canny edge contours · Rule-of-Thirds &amp; saliency center reticle · Hough structural lines · Farnebäck optical flow vectors · k-means palette burn-in.</small>
+          </div>
         </div>
         <div id="res-opencv-clahe-wrap" class="opencv-clahe-wrap hidden">
           <button id="res-opencv-clahe-toggle" class="btn ghost opencv-clahe-btn" type="button" aria-expanded="false">View OpenCV CLAHE Shadow Recovery</button>

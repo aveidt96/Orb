@@ -29,7 +29,14 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
     const sampleResult = {
       operation: "decode",
       media_kind: "video",
-      video: { name: "test-clip.mp4", width: 1920, height: 1080, duration: 4.2, fps: 24 },
+      video: {
+        name: "test-clip.mp4",
+        width: 1920,
+        height: 1080,
+        duration: 4.2,
+        fps: 24,
+        preview_url: "/api/jobs/job123/frames/source.mp4",
+      },
       summary: "Low-key tracking shot across neon wet pavement.",
       visual_analysis: {
         subject_and_scene: "Cyberpunk alleyway at night",
@@ -45,6 +52,7 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
         clahe_triggered: true,
         clahe_applied: true,
         clahe_preview_url: "/api/jobs/job123/frames/opencv_clahe_enhanced.jpg",
+        hud_preview_url: "/api/jobs/job123/frames/opencv_hud_overlay.jpg",
         color_and_lighting: {
           mean_luminance: 38.4,
           contrast_std: 24.1,
@@ -114,7 +122,35 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
     expect(actionItems).toHaveLength(2);
     expect(actionItems[0].textContent).toContain("Autonomous CLAHE Shadow & Contrast Recovery");
 
-    // 3. CLAHE preview toggle interaction
+    // 3a. Preview Mode Switcher (Original Reference | OpenCV Vision HUD | CLAHE Shadow Recovery)
+    const switcher = document.getElementById("res-preview-switcher");
+    const tabOriginal = document.getElementById("preview-tab-original");
+    const tabHud = document.getElementById("preview-tab-hud");
+    const tabClahe = document.getElementById("preview-tab-clahe");
+    const hudImg = document.getElementById("res-hud-image");
+    const clahePreviewImg = document.getElementById("res-clahe-preview-image");
+    expect(switcher.classList.contains("hidden")).toBe(false);
+    expect(tabHud.classList.contains("hidden")).toBe(false);
+    expect(tabClahe.classList.contains("hidden")).toBe(false);
+    tabHud.click();
+    expect(tabHud.getAttribute("aria-selected")).toBe("true");
+    expect(hudImg.classList.contains("hidden")).toBe(false);
+    expect(hudImg.getAttribute("src")).toContain("opencv_hud_overlay.jpg");
+    tabClahe.click();
+    expect(tabClahe.getAttribute("aria-selected")).toBe("true");
+    expect(clahePreviewImg.classList.contains("hidden")).toBe(false);
+    tabOriginal.click();
+    expect(tabOriginal.getAttribute("aria-selected")).toBe("true");
+
+    // 3b. OpenCV HUD & CLAHE card toggles
+    const hudWrap = document.getElementById("res-opencv-hud-wrap");
+    const hudToggle = document.getElementById("res-opencv-hud-toggle");
+    const hudView = document.getElementById("res-opencv-hud-view");
+    expect(hudWrap.classList.contains("hidden")).toBe(false);
+    expect(hudView.classList.contains("hidden")).toBe(true);
+    hudToggle.click();
+    expect(hudView.classList.contains("hidden")).toBe(false);
+
     const claheWrap = document.getElementById("res-opencv-clahe-wrap");
     const claheToggle = document.getElementById("res-opencv-clahe-toggle");
     const claheView = document.getElementById("res-opencv-clahe-view");
