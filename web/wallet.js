@@ -25,6 +25,12 @@ export function initWallet({ onBalance }) {
   const feedback = el("wallet-feedback");
   const connectButton = el("wallet-connect");
   const headerButton = el("header-wallet");
+  const headerJudgeButton = el("header-judge");
+  const headerCreditLabel = el("header-credit-label");
+  const judgeToggleButton = el("judge-demo-toggle");
+  const judgeForm = el("judge-demo-form");
+  const judgeCodeInput = el("judge-code-input");
+  const judgeCodeSubmit = el("judge-code-submit");
   const disconnectButton = el("wallet-disconnect");
   const switchButton = el("wallet-switch");
   const buyButton = el("wallet-buy");
@@ -41,6 +47,7 @@ export function initWallet({ onBalance }) {
   let address = null;
   let walletAccount = null;
   let verified = false;
+  let isJudge = false;
   let disconnected = sessionStorage.getItem(DISCONNECTED_KEY) === "1";
   let balance = 0;
   let busy = false;
@@ -65,21 +72,53 @@ export function initWallet({ onBalance }) {
 
   function setFeedback(message) { feedback.textContent = message; }
 
+  function savedSessionData() {
+    try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null"); }
+    catch { sessionStorage.removeItem(SESSION_KEY); return null; }
+  }
+
   function update() {
-    el("wallet-address").textContent = address ? `Authenticated wallet · ${address.slice(0, 6)}…${address.slice(-4)}` : "";
+    const judgeActive = isJudge && verified;
+    el("wallet-address").textContent = judgeActive
+      ? `OpenCV 2026 Judge Session · ${address.slice(0, 10)}…${address.slice(-4)}`
+      : address ? `Authenticated wallet · ${address.slice(0, 6)}…${address.slice(-4)}` : "";
     el("wallet-address").title = address || "";
-    el("wallet-balance").textContent = `${balance} testnet credit${balance === 1 ? "" : "s"} available`;
-    el("wallet-purchase").classList.toggle("hidden", !verified || configState !== "ready");
+    el("wallet-balance").textContent = judgeActive
+      ? `${balance} demo credit${balance === 1 ? "" : "s"} available`
+      : `${balance} testnet credit${balance === 1 ? "" : "s"} available`;
+    if (headerCreditLabel) {
+      headerCreditLabel.textContent = judgeActive ? "Demo credits" : "Testnet credits";
+    }
+    el("wallet-purchase").classList.toggle("hidden", judgeActive || !verified || configState !== "ready");
     disconnectButton.classList.toggle("hidden", !verified);
+    disconnectButton.textContent = judgeActive ? "Exit Judge Demo" : "Disconnect wallet";
     disconnectButton.disabled = busy;
-    connectButton.textContent = verified ? "Connected" : token ? "Retry session" : walletAccount ? "Sign again" : "Connect and sign";
+    connectButton.textContent = judgeActive ? "Judge Demo Active" : verified ? "Connected" : token ? "Retry session" : walletAccount ? "Sign again" : "Connect and sign";
     connectButton.disabled = busy || verified || configState !== "ready";
-    headerButton.textContent = verified ? "Connected" : "Connect Wallet";
-    headerButton.setAttribute("aria-label", verified ? "Wallet connected. Open Wallet & Credits" : "Connect wallet");
+    headerButton.textContent = judgeActive ? "Judge Mode" : verified ? "Connected" : "Connect Wallet";
+    headerButton.setAttribute("aria-label", judgeActive
+      ? "Judge Demo Mode active. Open Wallet & Credits"
+      : verified ? "Wallet connected. Open Wallet & Credits" : "Connect wallet");
     headerButton.classList.toggle("connected", verified);
     headerButton.disabled = busy;
-    buyButton.disabled = busy || !verified;
-    retryButton.disabled = busy || !verified;
+    if (headerJudgeButton) {
+      headerJudgeButton.textContent = judgeActive ? "Judge Demo · Active" : "Judge Demo";
+      headerJudgeButton.classList.toggle("active", judgeActive);
+      headerJudgeButton.setAttribute("aria-pressed", String(judgeActive));
+      headerJudgeButton.disabled = busy;
+    }
+    if (judgeToggleButton) {
+      judgeToggleButton.textContent = judgeActive ? "Judge Demo Active (10-credit bypass)" : "Judge Demo Mode (OpenCV 2026)";
+      judgeToggleButton.disabled = busy || judgeActive;
+    }
+    if (judgeForm && judgeActive) {
+      judgeForm.classList.add("hidden");
+      judgeToggleButton?.setAttribute("aria-expanded", "false");
+    }
+    if (judgeCodeSubmit) judgeCodeSubmit.disabled = busy;
+    if (judgeCodeInput) judgeCodeInput.disabled = busy;
+    buyButton.disabled = busy || !verified || judgeActive;
+    retryButton.disabled = busy || !verified || judgeActive;
     el("payment-method-options").querySelectorAll("button").forEach((button) => {
       button.disabled = busy;
       button.setAttribute("aria-pressed", String(button.dataset.method === selectedMethod));
@@ -92,6 +131,7 @@ export function initWallet({ onBalance }) {
     token = null;
     address = null;
     verified = false;
+    isJudge = false;
     balance = 0;
     sessionStorage.removeItem(SESSION_KEY);
     clearTimeout(verifyTimer);
@@ -144,6 +184,7 @@ export function initWallet({ onBalance }) {
       const result = await json("/api/orb/credits/balance", { headers: headers() });
       if (token !== currentToken || epoch !== authEpoch) return false;
       balance = result.available;
+      if (result.judge_demo) isJudge = true;
       verified = true;
       update();
       return true;
@@ -167,12 +208,28 @@ export function initWallet({ onBalance }) {
       return;
     }
     const epoch = authEpoch;
+    const saved = savedSessionData();
+    if (saved?.judgeDemo) {
+      if (typeof saved.token !== "string" || !saved.token ||
+          !Number.isFinite(saved.expiresAt) || saved.expiresAt <= Date.now() / 1000) {
+        clearSession("Judge demo session expired.");
+        return;
+      }
+      token = saved.token;
+      address = saved.address;
+      isJudge = true;
+      verified = false;
+      el("wallet-network").textContent = "Mode: OpenCV 2026 Judge Demo (No Wallet Needed)";
+      switchButton.classList.add("hidden");
+      scheduleExpiry(saved.expiresAt);
+      if (await refresh() && epoch === authEpoch) {
+        setFeedback("Judge Demo Mode restored. Demo credits ready for Decode, Compose, and Enhance.");
+      }
+      return;
+    }
     const accounts = await window.ethereum?.request?.({ method: "eth_accounts" }) || [];
     if (epoch !== authEpoch) return;
     walletAccount = accounts[0] || null;
-    let saved = null;
-    try { saved = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null"); }
-    catch { sessionStorage.removeItem(SESSION_KEY); }
     if (!saved) { update(); return; }
     if (!walletAccount || saved.address?.toLowerCase() !== walletAccount.toLowerCase()) {
       clearSession("Wallet account changed. Sign again.");
@@ -185,6 +242,7 @@ export function initWallet({ onBalance }) {
     }
     token = saved.token;
     address = saved.address;
+    isJudge = false;
     verified = false;
     scheduleExpiry(saved.expiresAt);
     if (await refresh() && epoch === authEpoch) {
@@ -229,6 +287,7 @@ export function initWallet({ onBalance }) {
       }
       token = session.token;
       address = session.wallet;
+      isJudge = false;
       verified = false;
       sessionStorage.setItem(SESSION_KEY, JSON.stringify({ token, address, expiresAt: session.expires_at }));
       scheduleExpiry(session.expires_at);
@@ -239,6 +298,57 @@ export function initWallet({ onBalance }) {
       if (pending && pending.wallet.toLowerCase() === address.toLowerCase()) retryButton.classList.remove("hidden");
     } catch (error) {
       if (attemptEpoch === authEpoch) clearSession(error.message || "Wallet connection was cancelled.");
+    } finally {
+      busy = false;
+      update();
+    }
+  }
+
+  async function activateJudgeDemo(rawCode) {
+    const code = (rawCode || "").trim();
+    if (!code) {
+      setFeedback("Enter the OpenCV 2026 judge access code.");
+      return false;
+    }
+    if (busy) return false;
+    busy = true;
+    disconnected = false;
+    sessionStorage.removeItem(DISCONNECTED_KEY);
+    const attemptEpoch = authEpoch;
+    setFeedback("Activating OpenCV 2026 Judge Demo session…");
+    update();
+    try {
+      const session = await json("/api/orb/judge-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      if (attemptEpoch !== authEpoch) return false;
+      if (typeof session.token !== "string" || !session.token ||
+          typeof session.wallet !== "string" || !session.wallet ||
+          !Number.isFinite(session.expires_at) || session.expires_at <= Date.now() / 1000) {
+        throw new Error("Judge demo session could not be verified.");
+      }
+      token = session.token;
+      address = session.wallet;
+      isJudge = true;
+      verified = true;
+      balance = Number.isFinite(session.balance?.available) ? session.balance.available : (session.credits || 10);
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+        token, address, expiresAt: session.expires_at, judgeDemo: true,
+      }));
+      el("wallet-network").textContent = "Mode: OpenCV 2026 Judge Demo (No Wallet Needed)";
+      switchButton.classList.add("hidden");
+      if (judgeCodeInput) judgeCodeInput.value = "";
+      scheduleExpiry(session.expires_at);
+      setFeedback(`Judge Demo Mode active. ${balance} demo credits unlocked for Decode, Compose, and Enhance.`);
+      update();
+      return true;
+    } catch (error) {
+      if (attemptEpoch === authEpoch) {
+        setFeedback(error.message || "Judge Demo activation failed.");
+      }
+      return false;
     } finally {
       busy = false;
       update();
@@ -350,6 +460,16 @@ export function initWallet({ onBalance }) {
   }
 
   async function restoreWallet() {
+    if (isJudge) return;
+    if (savedSessionData()?.judgeDemo) {
+      try {
+        await restoreSession();
+      } catch {
+        setFeedback("Could not restore judge demo session.");
+        update();
+      }
+      return;
+    }
     if (!window.ethereum?.request) return;
     // Wallet/network failures must never invalidate a successful config fetch.
     await network().catch(() => {
@@ -374,7 +494,7 @@ export function initWallet({ onBalance }) {
           result = await requestConfig(Math.min(CONFIG_TIMEOUT_MS, deadline - Date.now()));
         } catch {
           configState = "unavailable";
-          setFeedback(CONFIG_MESSAGES.unavailable);
+          if (!isJudge) setFeedback(CONFIG_MESSAGES.unavailable);
           update();
           if (attempt + 1 < CONFIG_MAX_ATTEMPTS && Date.now() < deadline) {
             const delay = CONFIG_BACKOFF_MS[Math.min(attempt, CONFIG_BACKOFF_MS.length - 1)];
@@ -386,17 +506,18 @@ export function initWallet({ onBalance }) {
         paymentMethods = result.methods;
         configState = config.enabled ? "ready" : "disabled";
         if (configState === "disabled") {
-          setFeedback(CONFIG_MESSAGES.disabled);
+          if (!isJudge) setFeedback(CONFIG_MESSAGES.disabled);
           update();
+          if (savedSessionData()?.judgeDemo) void restoreWallet();
           return;
         }
         renderMethods();
-        setFeedback("Connect a wallet to see your testnet credits.");
+        if (!isJudge) setFeedback("Connect a wallet to see your testnet credits.");
         update();
         void restoreWallet();
         return;
       }
-      setFeedback("Credit service temporarily unavailable. Try again.");
+      if (!isJudge) setFeedback("Credit service temporarily unavailable. Try again.");
     })().finally(() => { configTask = null; });
     return configTask;
   }
@@ -429,7 +550,7 @@ export function initWallet({ onBalance }) {
   }
 
   async function buy() {
-    if (busy || !token || !paymentMethods[selectedMethod]?.enabled) return;
+    if (busy || !token || isJudge || !paymentMethods[selectedMethod]?.enabled) return;
     if (pendingPayment()) {
       setFeedback("A payment is pending. Check pending transaction before buying again.");
       retryButton.classList.remove("hidden");
@@ -518,11 +639,12 @@ export function initWallet({ onBalance }) {
   async function disconnect() {
     if (!verified || !token || busy) return;
     const oldToken = token;
+    const wasJudge = isJudge;
     busy = true;
     disconnected = true;
     sessionStorage.setItem(DISCONNECTED_KEY, "1");
     walletAccount = null;
-    clearSession("Disconnecting wallet from Orb…");
+    clearSession(wasJudge ? "Exiting Judge Demo Mode…" : "Disconnecting wallet from Orb…");
     sessionStorage.removeItem(PENDING_KEY);
     sessionStorage.removeItem(ACTIVE_JOB_KEY);
     el("wallet-network").textContent = "Wallet not connected.";
@@ -536,12 +658,16 @@ export function initWallet({ onBalance }) {
     } catch (error) {
       revoked = error.status === 401;
     }
-    try {
-      await window.ethereum?.request?.({ method: "wallet_revokePermissions",
-        params: [{ eth_accounts: {} }] });
-    } catch { /* Some wallets do not support site permission revocation. */ }
-    setFeedback(revoked ? "Wallet disconnected from Orb." :
-      "Wallet disconnected locally. Server sign-out could not be confirmed; the old session will expire.");
+    if (!wasJudge) {
+      try {
+        await window.ethereum?.request?.({ method: "wallet_revokePermissions",
+          params: [{ eth_accounts: {} }] });
+      } catch { /* Some wallets do not support site permission revocation. */ }
+    }
+    setFeedback(wasJudge
+      ? "Exited Judge Demo Mode."
+      : revoked ? "Wallet disconnected from Orb." :
+        "Wallet disconnected locally. Server sign-out could not be confirmed; the old session will expire.");
     busy = false;
     update();
   }
@@ -553,15 +679,37 @@ export function initWallet({ onBalance }) {
     if (restoreFocus) headerButton.focus();
   }
 
+  function openJudgePrompt() {
+    open();
+    if (isJudge && verified) return;
+    if (judgeForm) {
+      judgeForm.classList.remove("hidden");
+      judgeToggleButton?.setAttribute("aria-expanded", "true");
+      judgeCodeInput?.focus();
+    }
+  }
+
   el("wallet-close").addEventListener("click", () => close(true));
   connectButton.addEventListener("click", () => void (token && !verified ? refresh() : connect()));
   headerButton.addEventListener("click", () => {
     open();
+    if (isJudge && verified) return;
     if (configState !== "ready") {
       void connect();
       return;
     }
     if (!verified) void (token ? refresh() : connect());
+  });
+  headerJudgeButton?.addEventListener("click", () => openJudgePrompt());
+  judgeToggleButton?.addEventListener("click", () => {
+    if (isJudge && verified) return;
+    const isHidden = judgeForm?.classList.toggle("hidden");
+    judgeToggleButton.setAttribute("aria-expanded", String(!isHidden));
+    if (!isHidden) judgeCodeInput?.focus();
+  });
+  judgeForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void activateJudgeDemo(judgeCodeInput?.value || "");
   });
   disconnectButton.addEventListener("click", () => void disconnect());
   switchButton.addEventListener("click", async () => {
@@ -592,20 +740,34 @@ export function initWallet({ onBalance }) {
     });
   });
   window.ethereum?.on?.("accountsChanged", (accounts) => {
-    if (disconnected) return;
+    if (disconnected || isJudge) return;
     const next = accounts?.[0] || null;
     if (next?.toLowerCase() === walletAccount?.toLowerCase()) return;
     walletAccount = next;
     clearSession("Wallet account changed. Sign again.");
   });
   window.ethereum?.on?.("chainChanged", () => {
-    if (disconnected) return;
+    if (disconnected || isJudge) return;
     clearSession("Wallet network changed. Switch to Arbitrum Sepolia and sign again.");
     void network().catch(() => {});
   });
+  function checkJudgeUrlParam() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get("judge");
+      if (!code) return;
+      params.delete("judge");
+      const query = params.toString();
+      const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash || ""}`;
+      window.history?.replaceState?.({}, "", nextUrl);
+      void activateJudgeDemo(code);
+    } catch { /* Ignore URL parsing errors in constrained environments */ }
+  }
   void loadConfig();
+  checkJudgeUrlParam();
   update();
   return { open, close, refresh, headers, requireAuthentication, hasCredit: () => verified && balance > 0,
     isAuthenticated: () => verified, walletAddress: () => verified ? address : null,
-    isEnabled: () => configState === "ready" };
+    isEnabled: () => configState === "ready", isJudgeDemo: () => isJudge && verified,
+    activateJudgeDemo };
 }

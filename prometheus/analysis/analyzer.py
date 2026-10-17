@@ -278,6 +278,10 @@ class _BaseRemoteAnalyzer(MultimodalAnalyzer):
                 "Identify which characteristics are shared across scenes (style, palette, "
                 "lighting, treatment) and reflect them as the global characteristics."
             )
+        cv_brief = getattr(metadata, "_cv_grounding_brief", None)
+        if isinstance(cv_brief, str) and cv_brief.strip():
+            lines.append("")
+            lines.append(cv_brief.strip())
         lines.append("")
         lines.append("Respond with a single JSON object following the schema from the system prompt.")
         return "\n".join(lines)

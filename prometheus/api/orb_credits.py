@@ -9,6 +9,7 @@ No signing key or payment secret is held by Orb.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -35,6 +36,11 @@ CHAIN_HEX = hex(CHAIN_ID)
 TX_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 QUOTE_DATA_PREFIX = "0x4f524231"  # ASCII ORB1 + random quote id bytes
+JUDGE_WALLET_PREFIX = "0x4a75646765"  # ASCII "Judge" prefix in 20-byte address
+
+
+def is_judge_wallet(wallet: str | None) -> bool:
+    return isinstance(wallet, str) and wallet.lower().startswith(JUDGE_WALLET_PREFIX)
 
 
 class CreditError(Exception):
@@ -60,6 +66,10 @@ class CreditConfig:
     usdg_decimals: int = USDG_DECIMALS
     usdg_price: int = USDG_PRICE
     deployment_target: str = ""
+    judge_demo_code: str = ""
+    judge_daily_cap: int = 150
+    judge_ip_daily_limit: int = 3
+    judge_session_credits: int = 10
 
     def __post_init__(self) -> None:
         if (self.payment_method not in {"native", "native_eth", "usdg"} or self.chain_id != CHAIN_ID
@@ -78,6 +88,10 @@ class CreditConfig:
                 raise ValueError("USDG credit price must be a positive integer in base units.")
         if self.price_wei <= 0 or not 1 <= self.confirmations <= 100:
             raise ValueError("Invalid Orb testnet credit price or confirmation count.")
+        if (type(self.judge_daily_cap) is not int or self.judge_daily_cap <= 0
+                or type(self.judge_ip_daily_limit) is not int or self.judge_ip_daily_limit <= 0
+                or type(self.judge_session_credits) is not int or not 1 <= self.judge_session_credits <= 100):
+            raise ValueError("Invalid Judge Demo Mode limits.")
         if self.enabled:
             origin = urlparse(self.public_origin)
             rpc = urlparse(self.rpc_url)
@@ -94,6 +108,10 @@ class CreditConfig:
     @property
     def ready(self) -> bool:
         return self.enabled and bool(self.public_origin and self.rpc_url and self.receiver)
+
+    @property
+    def judge_ready(self) -> bool:
+        return bool(isinstance(self.judge_demo_code, str) and self.judge_demo_code.strip())
 
 
 class RpcClient:
@@ -197,15 +215,83 @@ class CreditService:
         if origin != self.config.public_origin:
             raise CreditError("Wallet request origin is not trusted.", 403)
 
+    def create_judge_session(self, code: str, client_ip: str, origin: str | None = None) -> dict:
+        if not self.config.judge_ready:
+            raise CreditError("Judge Demo Mode is not enabled on this server.", 503)
+        if origin is not None and self.config.public_origin:
+            self._check_origin(origin)
+        candidate = code.strip() if isinstance(code, str) else ""
+        expected = self.config.judge_demo_code.strip()
+        if not candidate or len(candidate) > 256 or not hmac.compare_digest(
+            candidate.encode("utf-8"), expected.encode("utf-8")
+        ):
+            raise CreditError("Invalid Judge Demo access code.", 401)
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        ip_key = (client_ip or "unknown").strip().lower()
+        ip_marker = f"judge-ip:{day}:{hashlib.sha256(f'{day}:{ip_key}'.encode()).hexdigest()[:32]}"
+        day_prefix = f"{JUDGE_WALLET_PREFIX}{day}%"
+        with self._db() as db:
+            db.begin_write()
+            if self.database.postgres:
+                db.execute("SELECT pg_advisory_xact_lock(749519622)")
+            ip_row = db.execute("SELECT COUNT(*) AS cnt FROM challenges WHERE message=?", (ip_marker,)).fetchone()
+            ip_count = int((ip_row["cnt"] if ip_row else 0) or 0)
+            if ip_count >= self.config.judge_ip_daily_limit:
+                raise CreditError("Daily Judge Demo session limit reached for this network.", 429)
+            usage = db.execute(
+                "SELECT COALESCE(SUM(consumed + reserved), 0) AS used, COUNT(*) AS sessions "
+                "FROM balances WHERE wallet LIKE ?",
+                (day_prefix,),
+            ).fetchone()
+            used_today = int((usage["used"] if usage else 0) or 0)
+            sessions_today = int((usage["sessions"] if usage else 0) or 0)
+            if used_today >= self.config.judge_daily_cap or sessions_today >= self.config.judge_daily_cap:
+                raise CreditError(
+                    "Daily Judge Demo Mode capacity reached. Try again tomorrow or connect an Arbitrum Sepolia wallet.",
+                    429,
+                )
+            credits = min(self.config.judge_session_credits, self.config.judge_daily_cap - used_today)
+            wallet = f"{JUDGE_WALLET_PREFIX}{day}{secrets.token_hex(11)}"
+            token = secrets.token_urlsafe(32)
+            expires = int(time.time()) + 3600
+            nonce = f"judge:{day}:{secrets.token_hex(12)}"
+            db.execute("INSERT INTO challenges VALUES (?, ?, ?, ?, 1)", (nonce, wallet, ip_marker, expires))
+            db.execute("INSERT INTO sessions VALUES (?, ?, ?)",
+                       (hashlib.sha256(token.encode()).hexdigest(), wallet, expires))
+            db.execute("INSERT INTO balances(wallet, granted, consumed, reserved) VALUES (?, ?, 0, 0)",
+                       (wallet, credits))
+            db.commit()
+        checksum = to_checksum_address(wallet)
+        return {
+            "token": token,
+            "wallet": checksum,
+            "expires_at": expires,
+            "credits": credits,
+            "judge_demo": True,
+            "balance": {
+                "wallet": checksum,
+                "available": credits,
+                "reserved": 0,
+                "consumed": 0,
+                "granted": credits,
+                "judge_demo": True,
+            },
+        }
+
     def balance(self, wallet: str) -> dict:
         with self._db() as db:
             row = db.execute("SELECT granted, consumed, reserved FROM balances WHERE wallet=?",
                              (wallet,)).fetchone()
         granted, consumed, reserved = (row["granted"], row["consumed"], row["reserved"]) if row else (0, 0, 0)
-        return {"wallet": to_checksum_address(wallet), "available": granted - consumed - reserved,
-                "reserved": reserved, "consumed": consumed, "granted": granted}
+        result = {"wallet": to_checksum_address(wallet), "available": granted - consumed - reserved,
+                  "reserved": reserved, "consumed": consumed, "granted": granted}
+        if is_judge_wallet(wallet):
+            result["judge_demo"] = True
+        return result
 
     def create_quote(self, wallet: str, credits: int, payment_method: str | None = None) -> dict:
+        if is_judge_wallet(wallet):
+            raise CreditError("Judge Demo sessions cannot purchase testnet credits.", 403)
         self._require_ready()
         if payment_method is None:
             if len(self.config.methods) != 1:
@@ -254,6 +340,8 @@ class CreditService:
                 "data": tx_data, "credits": credits, "expires_at": expires}
 
     def verify_purchase(self, wallet: str, quote_id: str, tx_hash: str) -> dict:
+        if is_judge_wallet(wallet):
+            raise CreditError("Judge Demo sessions cannot purchase testnet credits.", 403)
         self._require_ready()
         if not isinstance(tx_hash, str) or not TX_RE.fullmatch(tx_hash):
             raise CreditError("Enter a valid transaction hash.")
@@ -368,6 +456,16 @@ class CreditService:
                 if prior["operation"] != operation or prior["fingerprint"] != fingerprint:
                     raise CreditError("Idempotency key was used for different content.", 409)
                 return prior["job_id"], False
+            if is_judge_wallet(wallet):
+                if self.database.postgres:
+                    db.execute("SELECT pg_advisory_xact_lock(749519622)")
+                day_prefix = f"{wallet.lower()[:20]}%"
+                used_row = db.execute(
+                    "SELECT COALESCE(SUM(consumed + reserved), 0) AS used FROM balances WHERE wallet LIKE ?",
+                    (day_prefix,),
+                ).fetchone()
+                if int((used_row["used"] if used_row else 0) or 0) >= self.config.judge_daily_cap:
+                    raise CreditError("Daily Judge Demo Mode run limit reached.", 429)
             updated = db.execute("UPDATE balances SET reserved=reserved+1 WHERE wallet=? "
                                  "AND granted-consumed-reserved>=1 RETURNING wallet", (wallet,)).fetchone()
             if updated is None:

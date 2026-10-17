@@ -250,4 +250,70 @@ describe("Orb credit configuration availability", () => {
     expect(feedback()).not.toBe(disabledMessage);
     expect(configFetch).toHaveBeenCalledTimes(1);
   });
+
+  it("activates a 10-credit Judge Demo session via the header Judge Demo button without a Web3 wallet", async () => {
+    delete window.ethereum;
+    const judgeWallet = "0x4a75646765202610160000000000000000000001";
+    globalThis.fetch = vi.fn(async (url, options) => {
+      if (url === "/api/orb/credits/config") return response({ enabled: false });
+      if (url === "/api/orb/judge-session") {
+        const body = JSON.parse(options.body);
+        if (body.code !== "opencv-2026") return response({ detail: "Invalid judge demo access code." }, 401);
+        return response({
+          wallet: judgeWallet, token: "judge-session-token",
+          expires_at: Math.floor(Date.now() / 1000) + 86400,
+          judge_demo: true, credits: 10,
+          balance: { wallet: judgeWallet, available: 10, reserved: 0, consumed: 0, granted: 10, judge_demo: true },
+        });
+      }
+      throw new Error(`Unexpected API operation: ${url}`);
+    });
+    const onBalance = vi.fn();
+    const wallet = initWallet({ onBalance });
+    await settle();
+    document.getElementById("header-judge").click();
+    expect(document.getElementById("wallet-panel").classList.contains("hidden")).toBe(false);
+    expect(document.getElementById("judge-demo-form").classList.contains("hidden")).toBe(false);
+    document.getElementById("judge-code-input").value = "opencv-2026";
+    document.getElementById("judge-demo-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await settle();
+    expect(wallet.isJudgeDemo()).toBe(true);
+    expect(wallet.hasCredit()).toBe(true);
+    expect(wallet.headers()).toEqual({ Authorization: "Bearer judge-session-token" });
+    expect(document.getElementById("header-judge").textContent).toBe("Judge Demo · Active");
+    expect(document.getElementById("wallet-balance").textContent).toBe("10 demo credits available");
+    expect(document.getElementById("header-credit-label").textContent).toBe("Demo credits");
+    expect(onBalance).toHaveBeenLastCalledWith(10);
+  });
+
+  it("auto-unlocks Judge Demo Mode from ?judge=<code> on load and strips the query param via history.replaceState", async () => {
+    delete window.ethereum;
+    const judgeWallet = "0x4a75646765202610160000000000000000000002";
+    const originalUrl = window.location.href;
+    window.history.replaceState({}, "", "/?judge=auto-code-2026&keep=1");
+    const replaceSpy = vi.spyOn(window.history, "replaceState");
+    globalThis.fetch = vi.fn(async (url, options) => {
+      if (url === "/api/orb/credits/config") return response(readyConfig);
+      if (url === "/api/orb/judge-session") {
+        const body = JSON.parse(options.body);
+        expect(body.code).toBe("auto-code-2026");
+        return response({
+          wallet: judgeWallet, token: "auto-judge-token",
+          expires_at: Math.floor(Date.now() / 1000) + 86400,
+          judge_demo: true, credits: 10,
+          balance: { wallet: judgeWallet, available: 10, reserved: 0, consumed: 0, granted: 10, judge_demo: true },
+        });
+      }
+      throw new Error(`Unexpected API operation: ${url}`);
+    });
+    const wallet = initWallet({ onBalance: vi.fn() });
+    await settle();
+    expect(replaceSpy).toHaveBeenCalledWith({}, "", "/?keep=1");
+    expect(window.location.search).toBe("?keep=1");
+    expect(wallet.isJudgeDemo()).toBe(true);
+    expect(wallet.hasCredit()).toBe(true);
+    expect(feedback()).toContain("10 demo credits unlocked");
+    window.history.replaceState({}, "", originalUrl);
+  });
 });
+

@@ -360,3 +360,52 @@ def test_failed_paid_ai_releases_credit(setup, tmp_path, monkeypatch):
         assert "private test failure" not in str(status)
         assert service.balance(wallet.address.lower())["available"] == 1
         assert service.balance(wallet.address.lower())["consumed"] == 0
+
+
+def test_judge_demo_session_and_rate_limits(tmp_path, monkeypatch):
+    monkeypatch.setenv("ORB_ENV", "local")
+    monkeypatch.setenv("ORB_AI_LOCAL_TESTING", "0")
+    monkeypatch.delenv("ORB_ENABLE_NIMIQ_PAYMENTS", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-only-placeholder")
+    judge_service = CreditService(CreditConfig(
+        database=tmp_path / "judge_credits.sqlite3",
+        enabled=False,
+        judge_demo_code="opencv-2026-secret",
+        judge_daily_cap=12,
+        judge_ip_daily_limit=3,
+        judge_session_credits=10,
+    ))
+    app = create_app(provider="gemini", output_dir=tmp_path / "output", upload_dir=tmp_path / "uploads",
+                     orb_ai_service=FakeAI(), orb_credit_service=judge_service)
+    with TestClient(app, base_url="http://localhost") as client:
+        origin = {"Origin": "http://localhost"}
+        assert client.get("/api/health").json()["orb_ai_access"] == "credits"
+        assert client.post("/api/orb/judge-session", headers=origin, json={"code": "wrong-code"}).status_code == 401
+        created = client.post("/api/orb/judge-session", headers=origin, json={"code": "opencv-2026-secret"})
+        assert created.status_code == 200
+        payload = created.json()
+        assert payload["judge_demo"] is True
+        assert payload["credits"] == 10
+        assert payload["balance"]["available"] == 10
+        assert payload["balance"]["judge_demo"] is True
+        # Two more sessions from the same IP succeed (3 per day limit), 4th returns 429:
+        assert client.post("/api/orb/judge-session", headers=origin, json={"code": "opencv-2026-secret"}).status_code == 200
+        assert client.post("/api/orb/judge-session", headers=origin, json={"code": "opencv-2026-secret"}).status_code == 200
+        assert client.post("/api/orb/judge-session", headers=origin, json={"code": "opencv-2026-secret"}).status_code == 429
+
+        headers = {**origin, "Authorization": "Bearer " + payload["token"], "X-Orb-Idempotency-Key": "j" * 32}
+        # Judge session can run AI operations and settle 1 credit without Web3 RPC:
+        response = client.post("/api/orb/enhance", headers=headers, json={"prompt": "A cinematic robot"})
+        assert response.status_code == 202
+        job_id = response.json()["job_id"]
+        for _ in range(100):
+            status = client.get(f"/api/jobs/{job_id}", headers=headers).json()
+            if status["state"] != "processing":
+                break
+            time.sleep(.02)
+        assert status["state"] == "complete"
+        bal = client.get("/api/orb/credits/balance", headers=headers).json()
+        assert bal["available"] == 9
+        assert bal["consumed"] == 1
+        assert bal["judge_demo"] is True
+

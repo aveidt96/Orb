@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 
 from prometheus import __version__
 from prometheus.analysis.prompt_builder import build_reconstructed_prompt
+from prometheus.analysis.opencv_telemetry import analyze_image_cv
 from prometheus.analysis.orb_ai import OrbAIService, _visual_from_report, video_generation_prompt
 from prometheus.analysis.remix import apply_remix
 from prometheus.analysis.schema import AnalysisReport
@@ -197,6 +198,9 @@ def create_app(
         usdg_decimals=int(os.environ.get("ORB_USDG_DECIMALS", "6")),
         usdg_price=parse_usdg_price(os.environ.get("ORB_CREDIT_PRICE_USDG_BASE_UNITS", str(USDG_PRICE))),
         deployment_target=os.environ.get("ORB_DEPLOYMENT_TARGET", ""),
+        judge_demo_code=os.environ.get("ORB_JUDGE_DEMO_CODE", "").strip(),
+        judge_daily_cap=int(os.environ.get("ORB_JUDGE_DAILY_CAP", "150")),
+        judge_ip_daily_limit=int(os.environ.get("ORB_JUDGE_IP_DAILY_LIMIT", "3")),
     ))
     if public_mode and (not credit_service.database.postgres
                         or credit_service.config.database_url != database_url):
@@ -250,6 +254,14 @@ def create_app(
     staged_uploads: dict[str, tuple[str, Path, float]] = {}
     staged_uploads_lock = threading.Lock()
 
+    def _client_ip(request: Request) -> str:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            first = forwarded.split(",")[0].strip()
+            if first:
+                return first
+        return request.client.host if request.client and request.client.host else "unknown"
+
     def _local_ai_allowed(request: Request) -> bool:
         return (
             os.environ.get("ORB_ENV") == "local"
@@ -266,19 +278,23 @@ def create_app(
         """Return a paid wallet or None for explicit loopback-only testing."""
         if provider == "mock" or not _provider_is_ready(provider):
             raise HTTPException(status_code=503, detail="Configure a real Orb AI provider and server-side API key.")
-        if _local_ai_allowed(request):
+        auth_header = request.headers.get("authorization")
+        if _local_ai_allowed(request) and not (
+            auth_header and (credit_service.config.ready or credit_service.config.judge_ready)
+        ):
             return None
-        if not credit_service.config.ready:
+        if not (credit_service.config.ready or credit_service.config.judge_ready):
             raise HTTPException(status_code=402, detail="AI operations require verified testnet credits. Payments are not configured.")
         try:
-            credit_service._check_origin(request.headers.get("origin"))
-            return credit_service.authenticate(request.headers.get("authorization"))
+            if credit_service.config.public_origin:
+                credit_service._check_origin(request.headers.get("origin"))
+            return credit_service.authenticate(auth_header)
         except CreditError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
     def _wallet(request: Request, *, mutating: bool = False) -> str:
         try:
-            if mutating:
+            if mutating and credit_service.config.public_origin:
                 credit_service._check_origin(request.headers.get("origin"))
             return credit_service.authenticate(request.headers.get("authorization"))
         except CreditError as exc:
@@ -513,7 +529,7 @@ def create_app(
                 and os.environ.get("ORB_ENV") == "local"
                 and os.environ.get("ORB_AI_LOCAL_TESTING") == "1"
                 else "configuration_required" if provider == "mock" or not _provider_is_ready(provider)
-                else "credits" if credit_service.config.ready
+                else "credits" if (credit_service.config.ready or credit_service.config.judge_ready)
                 else "credits_unavailable"
             ),
         }
@@ -539,6 +555,17 @@ def create_app(
             result.pop("price_wei")
         return result
 
+    @app.post("/api/orb/judge-session")
+    def orb_judge_session(request: Request, payload: dict) -> dict:
+        try:
+            return credit_service.create_judge_session(
+                payload.get("code", "") if isinstance(payload, dict) else "",
+                _client_ip(request),
+                request.headers.get("origin"),
+            )
+        except CreditError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
     @app.post("/api/orb/wallet/challenge")
     def orb_wallet_challenge(request: Request, payload: dict) -> dict:
         try:
@@ -557,7 +584,8 @@ def create_app(
     @app.post("/api/orb/wallet/logout")
     def orb_wallet_logout(request: Request) -> dict:
         try:
-            credit_service._check_origin(request.headers.get("origin"))
+            if credit_service.config.public_origin or request.headers.get("origin") is not None:
+                credit_service._check_origin(request.headers.get("origin"))
             credit_service.logout(request.headers.get("authorization"))
         except CreditError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
@@ -691,20 +719,36 @@ def create_app(
                                       validated_video=media["validated_video"])
                 run_dir = result.output.run_dir
                 analysis = result.report.to_dict()
+                cv_telemetry = result.opencv_telemetry
                 if operation == "decode":
                     payload = {"prompt": video_generation_prompt(result.prompt), "visual_analysis": _visual_from_report(analysis),
                                "refinements": []}
                 else:
                     manager.update(job.id, stage="Composing prompt")
-                    payload = _orb_service().compose_video(analysis)
+                    service = _orb_service()
+                    try:
+                        payload = service.compose_video(analysis, cv_telemetry=cv_telemetry)
+                    except TypeError:
+                        payload = service.compose_video(analysis)
+                if cv_telemetry is not None:
+                    payload["opencv_telemetry"] = cv_telemetry
                 video_result = build_result_dto(job.id, run_dir, job.video_name, job.source_file)
                 payload["video"] = video_result["video"]
                 payload["scenes"] = video_result["scenes"]
             else:
                 manager.update(job.id, stage="Analyzing image")
-                payload = _orb_service().image(operation, source)
                 run_dir = output_root / job.id
                 run_dir.mkdir(parents=True, exist_ok=True)
+                service = _orb_service()
+                try:
+                    payload = service.image(operation, source, run_dir=run_dir)
+                except TypeError:
+                    payload = service.image(operation, source)
+                if "opencv_telemetry" not in payload:
+                    try:
+                        payload["opencv_telemetry"] = analyze_image_cv(source, output_dir=run_dir).to_dict()
+                    except Exception:
+                        pass
                 payload["image"] = {
                     "name": job.video_name, "width": media["width"], "height": media["height"],
                     "preview_url": f"/api/jobs/{job.id}/frames/{job.source_file}",
@@ -712,6 +756,11 @@ def create_app(
             if not public_mode:
                 with stage("result_assembly"):
                     shutil.copyfile(source, run_dir / job.source_file)
+                cv_meta = payload.get("opencv_telemetry")
+                if isinstance(cv_meta, dict) and (
+                    cv_meta.get("clahe_triggered") or (run_dir / "opencv_clahe_enhanced.jpg").is_file()
+                ):
+                    cv_meta["clahe_preview_url"] = f"/api/jobs/{job.id}/frames/opencv_clahe_enhanced.jpg"
             else:
                 # Production retains prompt/analysis JSON in Postgres, not media.
                 if "video" in payload:
@@ -724,6 +773,8 @@ def create_app(
                     ]
                 if "image" in payload:
                     payload["image"].pop("preview_url", None)
+                if isinstance(payload.get("opencv_telemetry"), dict):
+                    payload["opencv_telemetry"].pop("clahe_preview_url", None)
             payload.update({"job_id": job.id, "operation": operation,
                             "notice": "The exact original creator prompt cannot be guaranteed." if operation == "decode" else
                             "A new prompt inspired by the reference, not its original instructions.",

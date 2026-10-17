@@ -1,0 +1,38 @@
+services:
+  orb-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orb-opencv-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: "8000"
+      ORB_ENV: "${ORB_ENV:-local}"
+      ORB_COMPUTE_ENV: "${ORB_COMPUTE_ENV:-AWS}"
+      ORB_AI_PROVIDER: "${ORB_AI_PROVIDER:-gemini}"
+      ORB_AI_MODEL: "${ORB_AI_MODEL:-gemini-2.5-flash}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:?Set GEMINI_API_KEY in .env or shell}"
+      ORB_JUDGE_DEMO_CODE: "${ORB_JUDGE_DEMO_CODE:-OPENCV2026}"
+      ORB_JUDGE_DAILY_CAP: "${ORB_JUDGE_DAILY_CAP:-150}"
+      ORB_JUDGE_IP_DAILY_LIMIT: "${ORB_JUDGE_IP_DAILY_LIMIT:-5}"
+      ORB_PUBLIC_ORIGIN: "${ORB_PUBLIC_ORIGIN:-https://orb-azure-ten.vercel.app}"
+      ORB_OUTPUT_DIR: "/data/output"
+      ORB_UPLOAD_DIR: "/data/uploads"
+      ORB_CREDIT_DB: "/data/orb_credits.sqlite3"
+      ORB_CREDITS_ENABLED: "${ORB_CREDITS_ENABLED:-0}"
+      ORB_ARBITRUM_RPC_URL: "${ORB_ARBITRUM_RPC_URL:-}"
+      ORB_CREDIT_RECEIVER: "${ORB_CREDIT_RECEIVER:-}"
+      ORB_CREDIT_PRICE_WEI: "${ORB_CREDIT_PRICE_WEI:-1000000000000}"
+    volumes:
+      - orb_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  orb_data:

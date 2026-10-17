@@ -67,6 +67,17 @@ const els = {
   resPreviewCard: document.getElementById("res-preview-card"),
   resAnalysisCard: document.getElementById("res-analysis-card"),
   resAnalysis: document.getElementById("res-analysis"),
+  resOpencvCard: document.getElementById("res-opencv-card"),
+  resOpencvBadges: document.getElementById("res-opencv-badges"),
+  resOpencvActionsWrap: document.getElementById("res-opencv-actions-wrap"),
+  resOpencvActions: document.getElementById("res-opencv-actions"),
+  resOpencvClaheWrap: document.getElementById("res-opencv-clahe-wrap"),
+  resOpencvClaheToggle: document.getElementById("res-opencv-clahe-toggle"),
+  resOpencvClaheView: document.getElementById("res-opencv-clahe-view"),
+  resOpencvClaheImg: document.getElementById("res-opencv-clahe-img"),
+  resOpencvPaletteWrap: document.getElementById("res-opencv-palette-wrap"),
+  resOpencvPalette: document.getElementById("res-opencv-palette"),
+  resOpencvMetrics: document.getElementById("res-opencv-metrics"),
   resEyebrow: document.getElementById("res-eyebrow"),
   resMode: document.getElementById("res-mode"),
   resPromptHeading: document.getElementById("res-prompt-heading"),
@@ -237,7 +248,9 @@ function syncDecodeButton() {
   if (creditMode === "credits" && serviceReady) {
     els.serviceStatus.textContent = needsCredits
       ? "A testnet credit is needed. Use Connect Wallet in the header to get started."
-      : "Orb service ready. Testnet credit available.";
+      : wallet?.isJudgeDemo?.()
+        ? "Orb service ready. Judge demo credit available."
+        : "Orb service ready. Testnet credit available.";
     syncEnhanceStatus();
   }
   els.decodeBtn.disabled = !selectedFile || !serviceReady || actionBusy || needsCredits;
@@ -775,7 +788,7 @@ function fmtTime(seconds) {
   return `${Number(seconds).toFixed(1)}s`;
 }
 
-function renderResult(result) {
+export function renderResult(result) {
   forgetPaidJob();
   for (const url of privateMediaUrls) URL.revokeObjectURL(url);
   privateMediaUrls = [];
@@ -872,8 +885,138 @@ function renderResult(result) {
     els.resRefinements.classList.remove("hidden");
   } else els.resRefinements.classList.add("hidden");
 
+  renderOpenCVTelemetry(result.opencv_telemetry);
+
   showScreen("results");
   if (creditMode === "credits") void loadPrivateMedia(result);
+}
+
+export function renderOpenCVTelemetry(cv) {
+  if (!els.resOpencvCard) return;
+  if (!cv || typeof cv !== "object") {
+    els.resOpencvCard.classList.add("hidden");
+    return;
+  }
+  els.resOpencvCard.classList.remove("hidden");
+
+  // 1. Header & Benchmark Badges (Measurable Value)
+  if (els.resOpencvBadges) {
+    els.resOpencvBadges.replaceChildren();
+    const fps = cv.effective_fps ?? cv.motion_and_continuity?.effective_fps;
+    const claheActive = Boolean(cv.clahe_applied || cv.clahe_triggered);
+    const versionLabel = `OpenCV ${cv.opencv_version || "5.0.0"}${cv.compute_badge ? ` · ${cv.compute_badge}` : ""}`;
+    const badgeSpecs = [
+      { text: versionLabel, highlight: false },
+      cv.processing_ms !== undefined ? { text: `Latency: ${Number(cv.processing_ms).toFixed(1)} ms`, highlight: false } : null,
+      fps !== undefined ? { text: `Throughput: ${Number(fps).toFixed(1)} FPS`, highlight: false } : null,
+      claheActive ? { text: "CLAHE Auto-Recovery: Active", highlight: true } : null,
+    ].filter(Boolean);
+    for (const spec of badgeSpecs) {
+      const span = document.createElement("span");
+      span.className = `opencv-badge${spec.highlight ? " highlight" : ""}`;
+      span.textContent = spec.text;
+      els.resOpencvBadges.appendChild(span);
+    }
+  }
+
+  // 2. Agentic Vision Loop (Perception -> Decision -> Action Log)
+  const actions = cv.agentic_actions || cv.agentic_decisions || [];
+  if (els.resOpencvActionsWrap && els.resOpencvActions) {
+    els.resOpencvActions.replaceChildren();
+    if (actions.length) {
+      for (const act of actions) {
+        const li = document.createElement("li");
+        const strong = document.createElement("strong");
+        strong.textContent = act.decision || "Agentic Decision";
+        const span = document.createElement("span");
+        span.textContent = ` — ${act.action || ""}${act.trigger ? ` (Perception trigger: ${act.trigger})` : ""}`;
+        li.append(strong, span);
+        els.resOpencvActions.appendChild(li);
+      }
+      els.resOpencvActionsWrap.classList.remove("hidden");
+    } else {
+      els.resOpencvActionsWrap.classList.add("hidden");
+    }
+  }
+
+  // 3. CLAHE Shadow Recovery Preview Toggle
+  if (els.resOpencvClaheWrap && els.resOpencvClaheImg && els.resOpencvClaheView && els.resOpencvClaheToggle) {
+    els.resOpencvClaheView.classList.add("hidden");
+    els.resOpencvClaheToggle.setAttribute("aria-expanded", "false");
+    els.resOpencvClaheToggle.textContent = "View OpenCV CLAHE Shadow Recovery";
+    if (cv.clahe_preview_url) {
+      if (creditMode !== "credits") els.resOpencvClaheImg.src = apiUrl(cv.clahe_preview_url);
+      else els.resOpencvClaheImg.removeAttribute("src");
+      els.resOpencvClaheWrap.classList.remove("hidden");
+    } else {
+      els.resOpencvClaheImg.removeAttribute("src");
+      els.resOpencvClaheWrap.classList.add("hidden");
+    }
+  }
+
+  // 4. Dominant Color Palette (cv2.kmeans)
+  const colors = cv.color_and_lighting?.dominant_colors || [];
+  if (els.resOpencvPaletteWrap && els.resOpencvPalette) {
+    els.resOpencvPalette.replaceChildren();
+    if (colors.length) {
+      for (const c of colors) {
+        const swatch = document.createElement("div");
+        swatch.className = "opencv-swatch";
+        const dot = document.createElement("span");
+        dot.className = "opencv-swatch-dot";
+        dot.style.backgroundColor = c.hex;
+        const hexLabel = document.createElement("span");
+        hexLabel.textContent = c.hex;
+        const weight = document.createElement("small");
+        weight.textContent = `${c.weight_pct}%`;
+        swatch.append(dot, hexLabel, weight);
+        els.resOpencvPalette.appendChild(swatch);
+      }
+      els.resOpencvPaletteWrap.classList.remove("hidden");
+    } else {
+      els.resOpencvPaletteWrap.classList.add("hidden");
+    }
+  }
+
+  // 5. Computer Vision Measurements Grid
+  if (els.resOpencvMetrics) {
+    els.resOpencvMetrics.replaceChildren();
+    const cl = cv.color_and_lighting || {};
+    const sg = cv.sharpness_and_geometry || {};
+    const mc = cv.motion_and_continuity || {};
+    const rows = [];
+    if (cl.lighting_key !== undefined) {
+      rows.push([
+        "Lighting & Exposure (cv2.calcHist / LAB)",
+        `${cl.lighting_key} · mean luminance ${cl.mean_luminance}/255 · contrast σ ${cl.contrast_std} · dynamic range ${cl.dynamic_range_pct}%`,
+      ]);
+    }
+    if (sg.laplacian_sharpness !== undefined || sg.sharpness_score !== undefined) {
+      const score = sg.sharpness_score ?? sg.laplacian_sharpness;
+      const label = sg.sharpness_label ?? sg.sharpness_tier;
+      const region = sg.saliency_region ?? sg.saliency_center?.composition_zone;
+      const lines = sg.dominant_lines ?? sg.structural_lines?.dominant_orientation;
+      rows.push([
+        "Composition & Focus (cv2.Laplacian / Canny / HoughLinesP)",
+        `Sharpness ${score} (${label}) · edge density ${sg.edge_density_pct}% · saliency: ${region} · lines: ${lines}`,
+      ]);
+    }
+    if (mc && mc.dominant_motion) {
+      rows.push([
+        "Optical Flow & Continuity (cv2.calcOpticalFlowFarneback / compareHist)",
+        `Motion: ${mc.dominant_motion} (dx=${mc.mean_dx}, dy=${mc.mean_dy}, radial=${mc.radial_flow}) · HSV continuity ${mc.mean_hist_correlation} (${mc.continuity_class})`,
+      ]);
+    }
+    for (const [title, text] of rows) {
+      const group = document.createElement("div");
+      const dt = document.createElement("dt");
+      dt.textContent = title;
+      const dd = document.createElement("dd");
+      dd.textContent = text;
+      group.append(dt, dd);
+      els.resOpencvMetrics.appendChild(group);
+    }
+  }
 }
 
 async function loadPrivateMedia(result) {
@@ -888,6 +1031,9 @@ async function loadPrivateMedia(result) {
   };
   if (result.video?.preview_url) void load(result.video.preview_url, els.resVideo);
   if (result.image?.preview_url) void load(result.image.preview_url, els.resImage);
+  if (result.opencv_telemetry?.clahe_preview_url && els.resOpencvClaheImg) {
+    void load(result.opencv_telemetry.clahe_preview_url, els.resOpencvClaheImg);
+  }
   for (const image of els.resScenes.querySelectorAll("img[data-private-url]")) void load(image.dataset.privateUrl, image);
 }
 
@@ -982,6 +1128,17 @@ els.copyPrompt.addEventListener("click", async () => {
     els.copyStatus.textContent = "Copy unavailable. Select the prompt text to copy it.";
   }
 });
+if (els.resOpencvClaheToggle) {
+  els.resOpencvClaheToggle.addEventListener("click", () => {
+    if (!els.resOpencvClaheView) return;
+    const nextHidden = !els.resOpencvClaheView.classList.contains("hidden");
+    els.resOpencvClaheView.classList.toggle("hidden", nextHidden);
+    els.resOpencvClaheToggle.setAttribute("aria-expanded", String(!nextHidden));
+    els.resOpencvClaheToggle.textContent = nextHidden
+      ? "View OpenCV CLAHE Shadow Recovery"
+      : "Hide OpenCV CLAHE Shadow Recovery";
+  });
+}
 els.backBtn.addEventListener("click", () => {
   finishActionTiming("cancelled");
   currentJobId = null;

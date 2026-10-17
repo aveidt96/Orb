@@ -18,8 +18,9 @@
       <span class="wordmark">Orb</span>
     </div>
     <div class="header-actions">
+      <button id="header-judge" class="header-judge" type="button" aria-label="Judge Demo Mode (OpenCV 2026)" aria-controls="wallet-panel" aria-expanded="false">Judge Demo</button>
       <button id="header-wallet" class="header-wallet" type="button" aria-label="Connect wallet" aria-controls="wallet-panel" aria-expanded="false">Connect Wallet</button>
-      <div id="header-credits" class="header-credits hidden" role="status" aria-live="polite" aria-label="Available testnet credits"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 4 14 4 14 0V6M5 12v6c0 4 14 4 14 0v-6"/></svg><span><strong id="header-credit-value">0</strong><small>Test credits</small></span></div>
+      <div id="header-credits" class="header-credits hidden" role="status" aria-live="polite" aria-label="Available testnet credits"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 4 14 4 14 0V6M5 12v6c0 4 14 4 14 0v-6"/></svg><span><strong id="header-credit-value">0</strong><small id="header-credit-label">Test credits</small></span></div>
       <div class="menu-wrap">
       <button id="menu-toggle" class="menu-toggle" type="button" aria-label="Open menu" aria-controls="site-menu" aria-expanded="false">
         <span></span><span></span><span></span>
@@ -91,6 +92,19 @@
       <button id="wallet-connect" class="btn primary" type="button">Connect and sign</button>
       <button id="wallet-switch" class="btn ghost hidden" type="button">Switch to Arbitrum Sepolia</button>
       <button id="wallet-disconnect" class="btn ghost hidden" type="button">Disconnect wallet</button>
+    </div>
+    <div id="judge-demo-box" class="judge-demo-box">
+      <div class="judge-demo-head">
+        <span class="judge-demo-badge">Judge Demo Mode (OpenCV 2026)</span>
+        <button id="judge-demo-toggle" class="judge-demo-toggle" type="button" aria-expanded="false" aria-controls="judge-demo-form">Enter code</button>
+      </div>
+      <form id="judge-demo-form" class="judge-demo-form hidden" novalidate>
+        <label class="field-label" for="judge-code-input">Competition judge access code</label>
+        <div class="judge-demo-row">
+          <input id="judge-code-input" class="select-input judge-code-input" type="password" autocomplete="off" spellcheck="false" placeholder="Enter judge code">
+          <button id="judge-code-submit" class="btn primary" type="submit">Unlock 10 credits</button>
+        </div>
+      </form>
     </div>
     <div id="wallet-purchase" class="wallet-purchase hidden">
       <div id="payment-method-picker" class="hidden">
@@ -219,6 +233,32 @@
         <p id="res-summary" class="summary"></p>
         <dl id="res-analysis" class="analysis-list"></dl>
         <div id="res-scenes" class="scenes"></div>
+      </div>
+
+      <div id="res-opencv-card" class="card opencv-card hidden" aria-labelledby="res-opencv-heading">
+        <div class="opencv-card-head">
+          <div>
+            <p class="card-overline">Agentic Vision Engine · Perception → Decision → Action</p>
+            <h3 id="res-opencv-heading">OpenCV 5.0 Agentic Telemetry</h3>
+          </div>
+          <div id="res-opencv-badges" class="opencv-badges" aria-label="OpenCV benchmark badges"></div>
+        </div>
+        <div id="res-opencv-actions-wrap" class="opencv-actions-wrap hidden">
+          <strong class="opencv-subhead">Autonomous Agentic Loop (Perception → Decision → Action)</strong>
+          <ol id="res-opencv-actions" class="opencv-actions-list"></ol>
+        </div>
+        <div id="res-opencv-clahe-wrap" class="opencv-clahe-wrap hidden">
+          <button id="res-opencv-clahe-toggle" class="btn ghost opencv-clahe-btn" type="button" aria-expanded="false">View OpenCV CLAHE Shadow Recovery</button>
+          <div id="res-opencv-clahe-view" class="opencv-clahe-view hidden">
+            <img id="res-opencv-clahe-img" class="preview opencv-clahe-img" alt="OpenCV CLAHE shadow-recovered frame">
+            <small class="opencv-clahe-caption">LAB L-channel adaptive histogram equalization (clipLimit=2.5, 8×8 grid) passed alongside original reference.</small>
+          </div>
+        </div>
+        <div id="res-opencv-palette-wrap" class="opencv-palette-wrap hidden">
+          <strong class="opencv-subhead">Dominant Color Palette (cv2.kmeans)</strong>
+          <div id="res-opencv-palette" class="opencv-palette"></div>
+        </div>
+        <dl id="res-opencv-metrics" class="analysis-list opencv-metrics-grid"></dl>
       </div>
 
       <div class="card prompt-card">

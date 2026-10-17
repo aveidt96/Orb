@@ -1545,3 +1545,144 @@ a temporary process-only model override described below.
   report records the resolved validation issue. No production extraction change,
   live provider/database access, deployment or infrastructure mutation is part
   of this commit. Prometheus and orb-demo-video remain untouched.
+
+## 2026-10-16 — OpenCV AI Competition 2026, Sprint 1 Part 1: read-only audit
+
+- Process rule from the user: every step taken must be recorded in this file.
+  New entries are appended at the end of the file.
+- Context: Orb is being upgraded for the OpenCV AI Competition 2026 (AWS).
+  Sprint 2 will add a Python OpenCV 5 + AWS microservice. Sprint 1 is this
+  audit plus a "Judge Demo Mode" so judges without an Arbitrum Sepolia wallet
+  can try Decode/Compose/Enhance on the live URL.
+- Repository state at audit: branch `main`, in sync with `origin/main`, clean
+  working tree. HEAD `3f6d304` (backend wake-up detection), which follows
+  `e22ea0a` (liquid glass UI merged into main). Note: the 2026-10-08 entry
+  said to keep the wake-up change local; it is now committed and on
+  origin/main. Stash `stash@{0}` (Phase 3 scene experiments) is still present.
+- Findings:
+  - Frontend is vanilla JavaScript ES modules built with Vite 7 (no React,
+    Next.js, router, or state library). Single page `web/index.html`; screens
+    switch via `showScreen()` in `web/app.js`. State is module-level variables
+    (`creditMode`, `currentMode`, `selectedFile`, ...) plus `sessionStorage`
+    for the wallet session token and active paid job ID. Tests use Vitest +
+    jsdom.
+  - Backend is FastAPI (`prometheus/api/app.py`) with one JobManager worker.
+    Uploads: `startVisual()` in `web/app.js` posts multipart to
+    `POST /api/orb/{decode|compose}/file`; `startEnhance()` posts JSON to
+    `POST /api/orb/enhance`. Both then poll `GET /api/jobs/{id}` and fetch
+    `GET /api/jobs/{id}/result`. AI calls are in
+    `prometheus/analysis/orb_ai.py` (images, Enhance, video Compose) and the
+    inherited `PrometheusPipeline` (video).
+  - Credit gate is server-authoritative. `_authorize_ai()` allows loopback
+    local testing only; otherwise it requires a bearer session created by
+    wallet signature (`CreditService.authenticate`). `_reserve_paid()` calls
+    `CreditService.reserve()`, which atomically increments `reserved` when
+    `granted - consumed - reserved >= 1` (402 otherwise). `settle()` consumes
+    the credit after the result is saved, or releases it on failure. Paid job
+    status/result/media reads require the owning wallet session. The frontend
+    `wallet.hasCredit()` check only disables buttons; the server decides.
+  - Implication for Judge Demo Mode: a localStorage-only credit counter cannot
+    work on the live URL, because the backend would still return 401/402. A
+    working demo mode needs a server-side path, which opens public AI access
+    (Gemini cost/abuse risk) and so needs an explicit design decision.
+- No code, configuration, deployment, or Prometheus files were changed in this
+  step. No tests were run (read-only).
+
+## 2026-10-16 — OpenCV AI Competition 2026, Sprint 1 Task 1: Server-backed Judge Demo Mode (Option B + URL auto-unlock)
+
+- Implemented server-backed Judge Demo Mode so OpenCV AI Competition 2026 judges can test `Decode`, `Compose`, and `Enhance` with 10 demo credits and zero Web3 / Arbitrum Sepolia friction while keeping Gemini quota protected on the server:
+  - **Backend (`prometheus/api/orb_credits.py`, `prometheus/api/app.py`):**
+    - Added `ORB_JUDGE_DEMO_CODE` (disabled when unset/empty), `ORB_JUDGE_DAILY_CAP` (default `150` runs/day across all judge sessions), and `ORB_JUDGE_IP_DAILY_LIMIT` (default `3` session creations/IP/day) to `CreditConfig`.
+    - Added `CreditService.create_judge_session(code, client_ip)` verified via `hmac.compare_digest`.
+    - Synthetic judge identities are encoded as valid 20-byte addresses prefixed with `0x4a75646765<YYYYMMDD>` (`"Judge"` in hex + UTC day + 22 random hex chars) in existing `balances`/`sessions` tables and per-IP rate-limit markers in `challenges` (`judge-ip:<day>:<sha256>`), requiring zero database DDL/schema changes and keeping `orb_usdg_migrate.inspect_schema()` 100% intact.
+    - Each valid session is pre-loaded with 10 demo credits (`granted=10`) so `CreditService.reserve()`, `settle()`, job polling (`/api/jobs/{id}`), result fetching (`/api/jobs/{id}/result`), and private media ownership checks work without modifying the core job pipeline.
+    - Added `POST /api/orb/judge-session` in `prometheus/api/app.py`, wired `_client_ip(request)`, and updated `_authorize_ai()` and `/api/health` (`orb_ai_access`) so Judge Demo sessions are accepted even when Web3 RPC is disabled or alongside normal Arbitrum Sepolia credits.
+  - **Frontend (`web/index.html`, `web/styles.css`, `web/wallet.js`, `web/app.js`):**
+    - Added `#header-judge` (`"Judge Demo"`) button in `.header-actions` and `#judge-demo-box` inline access-code form inside `#wallet-panel` styled to match Orb's liquid-glass UI.
+    - Added URL auto-unlock on page load in `web/wallet.js`: if `?judge=<code>` is present in `window.location.search`, Orb strips the `judge` param immediately via `window.history.replaceState` and calls `POST /api/orb/judge-session` to activate the 10-credit judge session automatically.
+    - Preserved 100% of existing Arbitrum Sepolia wallet, ETH/USDG quote, and session restoration behavior when Judge Demo Mode is not active.
+  - **Verification:**
+    - `tests/test_orb_credits.py`: 20 passed (including `test_judge_demo_session_and_rate_limits`).
+    - `web/credit-config.test.js`: 29 passed (including header button code activation and `?judge=<code>` URL auto-unlock + `history.replaceState` tests).
+
+## 2026-10-16 — OpenCV AI Competition 2026, Sprint 1 Task 2: Read-only audit of `prometheus/analysis/` (Prep for Sprint 2)
+
+- Audited `prometheus/analysis/orb_ai.py`, `prometheus/analysis/analyzer.py`, `prometheus/analysis/prompt_builder.py`, `prometheus/analysis/schema.py`, `prometheus/analysis/scene_schema.py`, `prometheus/api/dto.py`, `prometheus/pipeline.py`, `prometheus/video/`, and `requirements.txt`:
+  1. **Image & Video Processing and OpenCV (`cv2`) Status:**
+     - `cv2` / `opencv` is **not** currently imported anywhere in `prometheus/` and is **not** in `requirements.txt` (no `pyproject.toml` exists; dependencies are managed in `requirements.txt`, which currently lists `Pillow>=11.0`, `google-genai>=1.0`, `openai>=1.40`, `fastapi>=0.115`, `uvicorn>=0.30`, `pyyaml>=6.0`, `pytest>=8.0`, `python-multipart>=0.0.9`, `eth-account>=0.13,<1`, `psycopg[binary]>=3.2,<4`).
+     - **Images:** Validated via `Pillow` (`Image.open` + `.verify()`) in `prometheus/api/app.py:_validate_orb_image()`, then read as raw bytes (`image.read_bytes()`) in `OrbAIService.image()` and passed directly to Gemini as `types.Part.from_bytes(data=..., mime_type=...)`.
+     - **Videos:** Probed via `ffprobe` (`prometheus/video/probe.py:probe_video`), segmented into scenes via `ffmpeg` scene-change filter `select='gt(scene,threshold)',showinfo` (`prometheus/video/scene_detection.py:detect_scene_cuts`), and sampled into JPEG/PNG frames on disk via `ffmpeg -ss <timestamp> -i <video> -frames:v 1` (`prometheus/video/sampler.py:FrameSampler`). Per-scene frames (max 2 concurrent scene calls via `ThreadPoolExecutor(max_workers=2)`) and global frames are sent as `types.Part.from_bytes` to `GeminiAnalyzer`.
+  2. **Exact Gemini Inputs & Prompt Structures (`decode`, `compose`, `enhance`):**
+     - All Gemini calls use `types.GenerateContentConfig(system_instruction=..., response_mime_type="application/json", temperature=0.2, automatic_function_calling=disable)`.
+     - **Image `decode` (`OrbAIService.image("decode", path)`):** System prompt `_IMAGE_DECODE`; user text `"Analyze the attached reference image and return the requested JSON."` + 1 image `Part.from_bytes`. Expects JSON `{ "prompt": str, "visual_analysis": {8 VISUAL_FIELDS}, "refinements": list[str] }`.
+     - **Image `compose` (`OrbAIService.image("compose", path)`):** System prompt `_IMAGE_COMPOSE`; user text `"Analyze the attached reference image and return the requested JSON."` + 1 image `Part.from_bytes`. Expects the same JSON shape `{ "prompt", "visual_analysis", "refinements" }`.
+     - **Video `decode` (`PrometheusPipeline.run` -> `video_generation_prompt`):**
+       - Per scene (`GeminiAnalyzer.analyze_scene`): System prompt `SCENE_SYSTEM_PROMPT` (8 `SCENE_CATEGORIES`), user text `_scene_instruction` (scene index, start/end/duration, video resolution/fps, frame timestamps) + sampled scene frame `Part`s. Returns `{ "description": str, "categories": {key: {"observations": [...], "inferences": [...], "confidence": float}} }`.
+       - Global (`GeminiAnalyzer.analyze`): System prompt `SYSTEM_PROMPT` (19 `CATEGORIES`), user text `_user_instruction` (video metadata, chronological frame timestamps, and per-scene descriptions timeline) + sampled global frame `Part`s. Returns `{ "summary": str, "categories": {...} }`.
+       - `build_reconstructed_prompt(report)` builds Markdown with `## Generation prompt`, and `video_generation_prompt(markdown)` extracts the plain text prompt, while `_visual_from_report(analysis)` maps the 19 categories into the 8 `VISUAL_FIELDS`.
+     - **Video `compose` (`PrometheusPipeline.run` + `OrbAIService.compose_video`):** Runs the same frame-based `PrometheusPipeline.run` first, then sends a JSON text payload `{"summary", "categories", "scenes": [{"start", "end", "description"}]}` to Gemini with system prompt `_VIDEO_COMPOSE` to synthesize `{ "prompt": str, "refinements": list[str] }`.
+     - **Text `enhance` (`OrbAIService.enhance`):** System prompt `_ENHANCE`; user text is JSON `{"original_prompt": prompt, "intended_output": output, "visual_style": style, "detail_level": detail}` (no image parts). Returns `{ "enhanced_prompt": str }`.
+  3. **JSON Structure Returned by `GET /api/jobs/{id}/result`:**
+     - If `orb_result.json` exists in `run_dir` (all 3 Orb modes: `/api/orb/decode/file`, `/api/orb/compose/file`, `/api/orb/enhance`), `/api/jobs/{id}/result` returns `orb_result.json` directly:
+       - **Image `decode` / `compose`:** `{"job_id", "mode": "orb", "operation": "decode"|"compose", "media_kind": "image", "image": {"name", "width", "height", "format", "preview_url"}, "prompt", "visual_analysis": {subject_and_scene, composition, lighting, camera_perspective, color_palette, visual_style, atmosphere, motion_and_progression}, "refinements": [...]}`
+       - **Video `decode` / `compose`:** Same base keys as `build_result_dto()` (`job_id`, `tier`, `video`, `analyzer`, `summary`, `prompt_markdown`, `scene_count`, `scenes`, `global_frames`, `breakdown`, `parameters`) overlaid with `"mode": "orb"`, `"operation": "decode"|"compose"`, `"media_kind": "video"`, `"prompt": str`, `"visual_analysis": {8 VISUAL_FIELDS}`, `"refinements": list[str]`.
+       - **Text `enhance`:** `{"job_id", "mode": "orb", "operation": "enhance", "media_kind": "text", "original_prompt", "prompt", "preferences": {"output", "style", "detail"}, "visual_analysis": {}, "refinements": []}`.
+
+## 2026-10-16 — OpenCV AI Competition 2026, Sprint 2: OpenCV Agentic Vision Engine (`Perception -> Decision -> Action`)
+
+- Added `opencv-python-headless>=4.10.0` (installed `5.0.0.93` in `.venv`) and `numpy>=1.26.0` (installed `2.5.4`) to `requirements.txt`.
+- Created `prometheus/analysis/opencv_telemetry.py` implementing the OpenCV Agentic Vision Engine (`OpenCVTelemetry`, `analyze_image_cv`, `analyze_video_cv`) compatible across OpenCV 4.x and 5.x (`np.asarray(lines).reshape(-1, 4)` for `HoughLinesP`):
+  - **Perception (Image & Keyframes):**
+    - `cv2.cvtColor` (BGR -> LAB & HSV), `cv2.calcHist` CDF percentiles (`p5`–`p95` `dynamic_range_pct`), `mean_luminance`, `contrast_std`, `lighting_key` (`"low-key"`, `"high-key"`, `"low-contrast"`, `"balanced"`), and `cv2.kmeans` ($K=5$) dominant RGB Hex palette with percentage weights.
+    - `cv2.Laplacian(gray, cv2.CV_64F).var()` focus sharpness, `cv2.Canny` edge density, `cv2.moments` spatial center-of-mass mapped to Rule-of-Thirds grid intersections (`"center-weighted"`, `"upper-left third"`, etc.), and `cv2.HoughLinesP` structural line orientation (`"horizontal-dominant"`, `"vertical-dominant"`, `"diagonal/dynamic"`, `"organic/curved"`).
+  - **Perception (Video Motion & Continuity):**
+    - `cv2.VideoCapture` / extracted frame sequence sampling with Farnebäck dense optical flow (`cv2.calcOpticalFlowFarneback`) computing mean horizontal (`mean_dx`), vertical (`mean_dy`), and radial zoom (`radial_flow`) vectors plus `motion_magnitude`, classifying dominant camera/scene motion (`"static/locked-off"`, `"pan-right"`, `"pan-left"`, `"tilt-up"`, `"tilt-down"`, `"push-in/zoom-in"`, `"pull-out/zoom-out"`, `"high-kinetic-motion"`).
+    - 2D H-S histogram correlation (`cv2.compareHist(..., cv2.HISTCMP_CORREL)`) across consecutive frames to quantify continuity (`mean_hist_correlation`, `min_hist_correlation`, `continuity_class`), plus `frames_processed`, `processing_ms`, and `effective_fps`.
+  - **Agentic Decision & Action Loop (`agentic_actions` / `agentic_decisions`):**
+    1. **Autonomous CLAHE Shadow/Contrast Recovery:** When `mean_luminance < 60.0` or `contrast_std < 32.0`, applies `cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))` on the LAB L-channel, writes `opencv_clahe_enhanced.jpg` into `run_dir`, and passes **both** the original image and the CLAHE-recovered frame to Gemini (`OrbAIService._generate`).
+    2. **Sharpness-Gated Keyframe Ranking (Video):** Scores candidate video frames via `Laplacian` variance, flags blurry frames (`< 45.0`), selects the sharpest keyframe for primary telemetry, and logs the ranking in `motion_and_continuity.keyframe_ranking` and `agentic_actions`.
+    3. **Adaptive Prompt Grounding Directive (`cv_grounding_brief`):** Generates a deterministic measurement summary injected into `OrbAIService.image()`, `OrbAIService.compose_video()`, and `_BaseRemoteAnalyzer._user_instruction()`.
+- Wired `opencv_telemetry` into `prometheus/analysis/orb_ai.py`, `prometheus/analysis/analyzer.py`, `prometheus/pipeline.py`, and `prometheus/api/app.py` (`_run_orb_visual_job`) so every image and video `orb_result.json` includes top-level `"opencv_telemetry"`.
+- Added unit and integration tests in `tests/test_opencv_telemetry.py`:
+  - `pytest tests/test_opencv_telemetry.py tests/test_orb_ai.py -q`: 7 passed in 2.40s.
+  - `pytest tests/test_pipeline.py -q`: 5 passed in 22.34s.
+
+## 2026-10-16 — OpenCV AI Competition 2026, Sprint 3: Surfacing OpenCV 5.0 Agentic Telemetry & Benchmarks in the Orb UI
+
+- **Backend Preview URL & UI Convenience Keys (`prometheus/analysis/opencv_telemetry.py`, `prometheus/api/app.py`):**
+  - Updated `OpenCVTelemetry.to_dict()` and `_sharpness_and_geometry_metrics()` in `prometheus/analysis/opencv_telemetry.py` to include UI convenience fields alongside existing keys (`effective_fps`, `clahe_applied`, `sharpness_score`, `sharpness_label`, `saliency_region`, `dominant_lines`).
+  - Updated `_run_orb_visual_job()` in `prometheus/api/app.py` so whenever autonomous CLAHE shadow/contrast recovery writes `opencv_clahe_enhanced.jpg` into `run_dir` (and `not public_mode`), `opencv_telemetry["clahe_preview_url"] = f"/api/jobs/{job.id}/frames/opencv_clahe_enhanced.jpg"` is attached to `orb_result.json` (and stripped in `public_mode` where local files are deleted immediately).
+- **Frontend "OpenCV 5.0 Agentic Vision Telemetry" Card (`web/index.html`, `web/styles.css`, `web/app.js`):**
+  - Added `#res-opencv-card` to `.result-grid` inside `#screen-results` (`web/index.html`) and styled it with Orb's liquid-glass aesthetic in `web/styles.css` (`.opencv-card`, `.opencv-badges`, `.opencv-badge.highlight`, `.opencv-actions-list`, `.opencv-clahe-wrap`, `.opencv-palette`, `.opencv-swatch`, `.opencv-metrics-grid`).
+  - Implemented `renderOpenCVTelemetry(cv)` in `web/app.js`, called inside `renderResult(result)`:
+    1. **Header & Benchmark Badges (Measurable Value):** Renders pills for `OpenCV <version>`, `Latency: <processing_ms> ms`, `Throughput: <effective_fps> FPS`, and a highlighted `CLAHE Auto-Recovery: Active` badge when `clahe_applied` / `clahe_triggered` is true.
+    2. **Agentic Vision Loop (`Perception -> Decision -> Action` Log):** Renders `agentic_actions` step-by-step with perception triggers and autonomous actions, plus an interactive `"View OpenCV CLAHE Shadow Recovery"` preview toggle (`#res-opencv-clahe-toggle` / `#res-opencv-clahe-view` / `#res-opencv-clahe-img`) fetched via `loadPrivateMedia(result)` when in credit/judge mode.
+    3. **Dominant Color Palette (`cv2.kmeans`):** Renders visual color swatches (`background-color: #hex`) with hex labels and percentage weights (`weight_pct%`) for each of the 5 extracted dominant colors.
+    4. **Computer Vision Measurements Grid:** Displays `Lighting & Exposure (cv2.calcHist / LAB)`, `Composition & Focus (cv2.Laplacian / Canny / HoughLinesP)`, and (for video runs) `Optical Flow & Continuity (cv2.calcOpticalFlowFarneback / compareHist)`.
+    5. **Text-Only `Enhance` Runs:** Automatically hides `#res-opencv-card` when `result.opencv_telemetry` is absent and keeps `.prompt-card` full-width (`#res-analysis-card.hidden + #res-opencv-card.hidden + .prompt-card { grid-column: 1 / -1; }`).
+- **Verification:**
+  - `tests/test_opencv_telemetry.py` + `tests/test_orb_ai.py`: 7 passed.
+  - `web/opencv-telemetry.test.js` + `web/credit-config.test.js`: 31 passed (verifying badge pills, agentic loop trace, CLAHE preview toggle, 5 color swatches, CV metrics grid, and hiding on `Enhance`).
+
+## 2026-10-17 — OpenCV AI Competition 2026, Sprint 4: AWS Graviton Deployment Kit, Benchmark Suite (`BENCHMARKS.md`), and Technical Report (`SUBMISSION_GUIDE.md`)
+
+- **Deployment Configuration Audit:**
+  - Inspected `vercel.json`, `web/api-url.js`, `scripts/check-vercel-env.mjs`, and `Dockerfile`.
+  - Confirmed `orb-azure-ten.vercel.app` is built by Vercel (`npm run build:vercel` -> `web_dist`) with no proxy rewrites in `vercel.json`; instead, `web/api-url.js` prepends `import.meta.env.VITE_API_BASE_URL` to every `/api/*` request, currently pointing to the Render service (`https://orb-api-7qwv.onrender.com`), while keeping relative `/api/*` paths same-origin during local development.
+- **AWS Graviton (`arm64` / `x86_64`) Zero-Cost Deployment Kit & Hardware SIMD Telemetry:**
+  - Upgraded `Dockerfile` for multi-arch compatibility (`linux/arm64` AWS Graviton and `linux/amd64`), installing `ffmpeg`, `libglib2.0-0`, `curl`, and `requirements.txt` (`opencv-python-headless==5.0.0.93`), exposing port `8000`, and running `uvicorn prometheus.api.app:app --host 0.0.0.0 --port ${PORT:-8000}` (preserving PaaS `${PORT}` override compatibility).
+  - Created `docker-compose.aws.yml` and `deploy/aws_graviton_setup.sh` for one-command provisioning on a free-tier AWS EC2 `t4g.small` (Ubuntu 24.04 LTS Arm64) instance with `GEMINI_API_KEY`, `ORB_JUDGE_DEMO_CODE=OPENCV2026`, `ORB_JUDGE_DAILY_CAP=150`, and `ORB_CORS_ORIGINS=https://orb-azure-ten.vercel.app`.
+  - Added `detect_compute_runtime()` in `prometheus/analysis/opencv_telemetry.py` using `platform.machine()` and `cv2.getBuildInformation()` to report `compute_arch`, `compute_badge` (e.g., `ARM64 NEON` on AWS Graviton or `x86_64 AVX2`), and `compute_runtime` in `OpenCVTelemetry.to_dict()`, and updated `web/app.js` (`renderOpenCVTelemetry`) to display `OpenCV <version> · <compute_badge>`.
+- **Reproducible Benchmark & Evaluation Suite (`scripts/benchmark_opencv.py` -> `BENCHMARKS.md`):**
+  - Created and executed `scripts/benchmark_opencv.py` across 1080p standard (`260.9 ms` mean / `166.08 ms` best, `3.83 FPS`), 4K UHD (`555.62 ms` mean / `514.48 ms` best, `1.8 FPS`), 1080p underexposed low-contrast (`231.06 ms` mean, `4.33 FPS`, triggering autonomous CLAHE with **+22.4% luminance recovery**, **+16.6% contrast std expansion**, and **+42.6% Laplacian micro-edge sharpness gain**), and a 30-frame 720p optical-flow + keyframe-gating video sequence (`1429.36 ms` total, `47.65 ms/frame`, **`21.92 FPS`** effective throughput, filtering 3 motion-blurred frames).
+- **Competition Technical Report & Architecture Diagram (`SUBMISSION_GUIDE.md`):**
+  - Created `SUBMISSION_GUIDE.md` with a Mermaid architecture diagram (`Vercel Frontend -> AWS Graviton EC2 + OpenCV 5.0 Agentic Loop -> Gemini VLM + Arbitrum Sepolia / Judge Demo Gate`), detailed breakdown of the `Perception -> Decision -> Action` loop, local preview commands (`http://127.0.0.1:8000/?judge=OPENCV2026`), and step-by-step instructions to switch `VITE_API_BASE_URL` on Vercel to the AWS Graviton HTTPS origin.
+- **Verification:**
+  - `pytest tests/test_opencv_telemetry.py tests/test_orb_ai.py tests/test_orb_credits.py -q`: 27 passed.
+  - `vitest run web/opencv-telemetry.test.js web/credit-config.test.js`: 31 passed.
+
+## 2026-10-17 — OpenCV AI Competition 2026: Clean Commit on `main` & Local Preview Server Launch
+
+- Verified `git status --short` on `main`—all modified and new files belong to Sprints 1–4 (`Dockerfile`, `HANDOFF.md`, `BENCHMARKS.md`, `SUBMISSION_GUIDE.md`, `docker-compose.aws.yml`, `deploy/aws_graviton_setup.sh`, `requirements.txt`, `prometheus/`, `scripts/benchmark_opencv.py`, `tests/`, and `web/`), with zero temporary or untracked junk artifacts.
+- Staged all Sprint 1–4 files and created a single clean commit on `main`: `feat(opencv): add OpenCV 5.0 agentic vision telemetry, judge demo mode, and AWS Graviton deployment kit` (not pushed to `origin`, awaiting local browser testing).
+- Started the local FastAPI preview server in the background on `http://127.0.0.1:8000` with `ORB_JUDGE_DEMO_CODE=OPENCV2026`, `ORB_JUDGE_DAILY_CAP=150`, and `ORB_COMPUTE_ENV=AWS` for browser testing at `http://127.0.0.1:8000/?judge=OPENCV2026`.

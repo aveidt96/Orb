@@ -27,6 +27,7 @@ from prometheus.storage import (
 from prometheus.video.probe import ValidatedVideo, VideoMetadata, probe_video
 from prometheus.video.sampler import FrameSampler, SampledFrame
 from prometheus.video.segmenter import Scene, SceneSegmenter
+from prometheus.analysis.opencv_telemetry import analyze_video_cv
 from prometheus.performance import metric, stage
 
 
@@ -38,6 +39,7 @@ class PipelineResult:
     report: AnalysisReport
     prompt: str
     output: RunOutput
+    opencv_telemetry: dict | None = None
 
 
 class PrometheusPipeline:
@@ -75,6 +77,18 @@ class PrometheusPipeline:
         metric("global_frames", len(frames))
         if not frames:
             raise PrometheusError(f"No frames could be extracted from {metadata.path}")
+        cv_telemetry_dict: dict | None = None
+        try:
+            with stage("opencv_perception"):
+                cv_telemetry = analyze_video_cv(
+                    Path(metadata.path),
+                    [frame.path for frame in frames],
+                    output_dir=run_dir,
+                )
+                cv_telemetry_dict = cv_telemetry.to_dict()
+                setattr(metadata, "_cv_grounding_brief", cv_telemetry.cv_grounding_brief)
+        except Exception:
+            cv_telemetry_dict = None
         notify("Analyzing shared characteristics")
         report = self.analyzer.analyze(metadata, frames, scene_context=scene_summaries)
         report.scenes = scene_summaries
@@ -100,6 +114,7 @@ class PrometheusPipeline:
             report=report,
             prompt=prompt,
             output=output,
+            opencv_telemetry=cv_telemetry_dict,
         )
 
     def _analyze_scenes(

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from prometheus.analysis.analyzer import GeminiAnalyzer, OpenAIAnalyzer
+from prometheus.analysis.opencv_telemetry import OpenCVTelemetry, analyze_image_cv
 from prometheus.errors import PrometheusError
 from prometheus.performance import ai_call, categorized, stage
 
@@ -62,7 +63,13 @@ class OrbAIService:
         self.provider = provider
         self.model = model
 
-    def _generate(self, system: str, user: str, image: Path | None = None) -> dict[str, Any]:
+    def _generate(
+        self,
+        system: str,
+        user: str,
+        image: Path | None = None,
+        extra_images: list[Path] | None = None,
+    ) -> dict[str, Any]:
         def call() -> str:
             if self.provider == "gemini":
                 from google.genai import types
@@ -73,6 +80,11 @@ class OrbAIService:
                         parts.append(types.Part.from_bytes(
                             data=image.read_bytes(), mime_type=_mime(image),
                         ))
+                        for extra in extra_images or []:
+                            if extra is not None and extra.is_file():
+                                parts.append(types.Part.from_bytes(
+                                    data=extra.read_bytes(), mime_type=_mime(extra),
+                                ))
                 with ai_call():
                     response = self.analyzer._api_client.models.generate_content(
                         model=self.model, contents=parts,
@@ -85,6 +97,11 @@ class OrbAIService:
                     encoded = base64.b64encode(image.read_bytes()).decode("ascii")
                     content.append({"type": "image_url", "image_url": {
                         "url": f"data:{_mime(image)};base64,{encoded}"}})
+                    for extra in extra_images or []:
+                        if extra is not None and extra.is_file():
+                            extra_b64 = base64.b64encode(extra.read_bytes()).decode("ascii")
+                            content.append({"type": "image_url", "image_url": {
+                                "url": f"data:{_mime(extra)};base64,{extra_b64}"}})
             with ai_call():
                 response = self.analyzer._api_client.chat.completions.create(
                     model=self.model, response_format={"type": "json_object"},
@@ -102,15 +119,40 @@ class OrbAIService:
         return self.analyzer._generate_with_retries(call, parse)
 
     @categorized("image_analysis")
-    def image(self, operation: str, image: Path) -> dict[str, Any]:
+    def image(self, operation: str, image: Path, run_dir: Path | None = None) -> dict[str, Any]:
         system = _IMAGE_DECODE if operation == "decode" else _IMAGE_COMPOSE
-        data = self._generate(system, "Analyze the attached reference image and return the requested JSON.", image)
+        with stage("opencv_perception"):
+            telemetry = analyze_image_cv(image, output_dir=run_dir)
+        user_prompt = (
+            "Analyze the attached reference image and return the requested JSON.\n\n"
+            f"{telemetry.cv_grounding_brief}"
+        )
+        extra_imgs: list[Path] = []
+        if telemetry.clahe_enhanced_path is not None and telemetry.clahe_enhanced_path.is_file():
+            extra_imgs.append(telemetry.clahe_enhanced_path)
+            user_prompt += (
+                "\nNote: A second OpenCV CLAHE shadow/contrast-recovered frame is attached "
+                "to expose low-contrast details; use the first image for true exposure/color "
+                "and the second for shadow/structural detail."
+            )
+        data = self._generate(system, user_prompt, image, extra_images=extra_imgs)
         with stage("response_validation"):
-            return _visual_result(data, operation)
+            result = _visual_result(data, operation)
+            result["opencv_telemetry"] = telemetry.to_dict()
+            return result
 
     @categorized("compose_synthesis")
-    def compose_video(self, analysis: dict[str, Any]) -> dict[str, Any]:
-        evidence = {
+    def compose_video(
+        self,
+        analysis: dict[str, Any],
+        cv_telemetry: dict[str, Any] | OpenCVTelemetry | None = None,
+    ) -> dict[str, Any]:
+        telemetry_dict = (
+            cv_telemetry.to_dict()
+            if isinstance(cv_telemetry, OpenCVTelemetry)
+            else (cv_telemetry if isinstance(cv_telemetry, dict) else None)
+        )
+        evidence: dict[str, Any] = {
             "summary": analysis.get("summary", ""),
             "categories": analysis.get("categories", {}),
             "scenes": [
@@ -118,11 +160,19 @@ class OrbAIService:
                 for s in analysis.get("scenes", [])
             ],
         }
+        if telemetry_dict:
+            evidence["opencv_telemetry_grounding"] = telemetry_dict.get("cv_grounding_brief", "")
         data = self._generate(_VIDEO_COMPOSE, json.dumps(evidence, ensure_ascii=False))
         with stage("response_validation"):
             prompt = _required_text(data, "prompt")
-            return {"prompt": prompt, "visual_analysis": _visual_from_report(analysis),
-                    "refinements": _refinements(data)}
+            out: dict[str, Any] = {
+                "prompt": prompt,
+                "visual_analysis": _visual_from_report(analysis),
+                "refinements": _refinements(data),
+            }
+            if telemetry_dict is not None:
+                out["opencv_telemetry"] = telemetry_dict
+            return out
 
     @categorized("enhance")
     def enhance(self, prompt: str, output: str, style: str, detail: str) -> str:
@@ -132,6 +182,7 @@ class OrbAIService:
         }, ensure_ascii=False))
         with stage("response_validation"):
             return _required_text(data, "enhanced_prompt")
+
 
 
 def _mime(path: Path) -> str:
