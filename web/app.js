@@ -246,10 +246,11 @@ function syncEnhanceStatus() {
 function syncDecodeButton() {
   const needsCredits = creditMode === "credits" && !wallet?.hasCredit();
   if (creditMode === "credits" && serviceReady) {
+    const creditVal = document.getElementById("header-credit-value")?.textContent || "10";
     els.serviceStatus.textContent = needsCredits
       ? "A testnet credit is needed. Use Connect Wallet in the header to get started."
       : wallet?.isJudgeDemo?.()
-        ? "Orb service ready. Judge demo credit available."
+        ? `Orb service ready · Judge Demo Mode is Active (${creditVal} test credits available).`
         : "Orb service ready. Testnet credit available.";
     syncEnhanceStatus();
   }

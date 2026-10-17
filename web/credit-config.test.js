@@ -281,17 +281,24 @@ describe("Orb credit configuration availability", () => {
     expect(wallet.hasCredit()).toBe(true);
     expect(wallet.headers()).toEqual({ Authorization: "Bearer judge-session-token" });
     expect(document.getElementById("header-judge").textContent).toBe("Judge Demo · Active");
-    expect(document.getElementById("wallet-balance").textContent).toBe("10 demo credits available");
-    expect(document.getElementById("header-credit-label").textContent).toBe("Demo credits");
+    expect(document.getElementById("wallet-balance").textContent).toBe("10 test credits available");
+    expect(document.getElementById("header-credit-label").textContent).toBe("Test credits");
+    expect(document.getElementById("wallet-disconnect").textContent).toBe("Exit Judge Mode / Connect Wallet");
     expect(onBalance).toHaveBeenLastCalledWith(10);
   });
 
-  it("auto-unlocks Judge Demo Mode from ?judge=<code> on load and strips the query param via history.replaceState", async () => {
-    delete window.ethereum;
+  it("auto-unlocks Judge Demo Mode from ?judge=<code> on load even with window.ethereum present and allows switching to a real Web3 wallet", async () => {
     const judgeWallet = "0x4a75646765202610160000000000000000000002";
     const originalUrl = window.location.href;
     window.history.replaceState({}, "", "/?judge=auto-code-2026&keep=1");
     const replaceSpy = vi.spyOn(window.history, "replaceState");
+    const provider = { on: vi.fn(), request: vi.fn(async ({ method }) => {
+      if (method === "eth_chainId") return "0x66eee";
+      if (method === "eth_accounts" || method === "eth_requestAccounts") return [account];
+      if (method === "personal_sign") return "synthetic-signature";
+      throw new Error(`Unexpected wallet operation: ${method}`);
+    }) };
+    window.ethereum = provider;
     globalThis.fetch = vi.fn(async (url, options) => {
       if (url === "/api/orb/credits/config") return response(readyConfig);
       if (url === "/api/orb/judge-session") {
@@ -304,6 +311,10 @@ describe("Orb credit configuration availability", () => {
           balance: { wallet: judgeWallet, available: 10, reserved: 0, consumed: 0, granted: 10, judge_demo: true },
         });
       }
+      if (url === "/api/orb/wallet/challenge") return response({ nonce: "synthetic-nonce", message: "Sign in to Orb" });
+      if (url === "/api/orb/wallet/sign-in") return response({ wallet: account, token: "real-wallet-token",
+        expires_at: Math.floor(Date.now() / 1000) + 3600 });
+      if (url === "/api/orb/credits/balance") return response({ available: 4 });
       throw new Error(`Unexpected API operation: ${url}`);
     });
     const wallet = initWallet({ onBalance: vi.fn() });
@@ -312,7 +323,19 @@ describe("Orb credit configuration availability", () => {
     expect(window.location.search).toBe("?keep=1");
     expect(wallet.isJudgeDemo()).toBe(true);
     expect(wallet.hasCredit()).toBe(true);
-    expect(feedback()).toContain("10 demo credits unlocked");
+    expect(document.getElementById("wallet-balance").textContent).toBe("10 test credits available");
+    expect(document.getElementById("wallet-disconnect").textContent).toBe("Exit Judge Mode / Connect Wallet");
+    expect(document.getElementById("wallet-connect").disabled).toBe(false);
+    expect(feedback()).toContain("Judge Demo Mode is Active");
+
+    // User can connect their real Web3 wallet while Judge Mode is active:
+    document.getElementById("wallet-connect").click();
+    await settle();
+    expect(wallet.isJudgeDemo()).toBe(false);
+    expect(wallet.isAuthenticated()).toBe(true);
+    expect(wallet.walletAddress()).toBe(account);
+    expect(wallet.headers()).toEqual({ Authorization: "Bearer real-wallet-token" });
+    expect(document.getElementById("wallet-balance").textContent).toBe("4 testnet credits available");
     window.history.replaceState({}, "", originalUrl);
   });
 });

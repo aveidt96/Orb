@@ -147,7 +147,7 @@ class CreditService:
         if not self.config.ready:
             raise CreditError("Arbitrum Sepolia testnet credits are not configured.", 503)
 
-    def challenge(self, address: str, origin: str) -> dict:
+    def challenge(self, address: str, origin: str | None) -> dict:
         self._require_ready()
         self._check_origin(origin)
         if not is_address(address):
@@ -156,17 +156,25 @@ class CreditService:
         nonce = secrets.token_hex(16)
         issued = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         expiry = datetime.fromtimestamp(time.time() + 300, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-        parsed = urlparse(self.config.public_origin)
+        norm_origin = (origin or "").strip().rstrip("/")
+        effective_origin = (
+            norm_origin
+            if (norm_origin and urlparse(norm_origin).netloc)
+            else self.config.public_origin
+        )
+        parsed = urlparse(effective_origin)
         message = (f"{parsed.netloc} wants you to sign in with your Ethereum account:\n{wallet}\n\n"
                    "Sign in to Orb's Arbitrum Sepolia testnet demo.\n\n"
-                   f"URI: {self.config.public_origin}\nVersion: 1\nChain ID: {CHAIN_ID}\n"
+                   f"URI: {effective_origin}\nVersion: 1\nChain ID: {CHAIN_ID}\n"
                    f"Nonce: {nonce}\nIssued At: {issued}\nExpiration Time: {expiry}")
         with self._db() as db:
             db.execute("INSERT INTO challenges VALUES (?, ?, ?, ?, 0)",
                        (nonce, wallet.lower(), message, int(time.time()) + 300))
         return {"nonce": nonce, "message": message, "expires_at": expiry}
 
-    def sign_in(self, nonce: str, signature: str, origin: str) -> dict:
+    create_challenge = challenge
+
+    def sign_in(self, nonce: str, signature: str, origin: str | None) -> dict:
         self._require_ready()
         self._check_origin(origin)
         if not isinstance(nonce, str) or not isinstance(signature, str) or len(signature) > 256:
@@ -191,6 +199,8 @@ class CreditService:
             db.commit()
         return {"token": token, "wallet": to_checksum_address(row["wallet"]), "expires_at": expires}
 
+    verify_challenge = sign_in
+
     def authenticate(self, authorization: str | None) -> str:
         if not authorization or not authorization.startswith("Bearer "):
             raise CreditError("Connect and sign with your wallet first.", 401)
@@ -212,18 +222,23 @@ class CreditService:
             db.execute("DELETE FROM sessions WHERE token_hash=? AND wallet=?", (token_hash, wallet))
 
     def _check_origin(self, origin: str | None) -> None:
-        if origin == self.config.public_origin:
+        norm_origin = (origin or "").strip().rstrip("/")
+        norm_public = (self.config.public_origin or "").strip().rstrip("/")
+        if norm_origin and norm_origin == norm_public:
             return
-        if origin and self.config.public_origin and os.environ.get("ORB_ENV") == "local":
-            p_orig = urlparse(origin)
-            p_pub = urlparse(self.config.public_origin)
-            if (
-                p_orig.scheme == "http"
-                and p_pub.scheme == "http"
-                and p_orig.hostname in {"localhost", "127.0.0.1"}
-                and p_pub.hostname in {"localhost", "127.0.0.1"}
-            ):
-                return
+        if os.environ.get("ORB_ENV") == "local":
+            p_pub = urlparse(norm_public) if norm_public else None
+            pub_is_local = (
+                p_pub is None
+                or not p_pub.hostname
+                or (p_pub.scheme == "http" and p_pub.hostname in {"localhost", "127.0.0.1"})
+            )
+            if pub_is_local:
+                if not norm_origin:
+                    return
+                p_orig = urlparse(norm_origin)
+                if p_orig.scheme == "http" and p_orig.hostname in {"localhost", "127.0.0.1"}:
+                    return
         raise CreditError("Wallet request origin is not trusted.", 403)
 
     def create_judge_session(self, code: str, client_ip: str, origin: str | None = None) -> dict:

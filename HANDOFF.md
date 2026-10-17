@@ -1711,3 +1711,18 @@ a temporary process-only model override described below.
   - Live 2-Second MP4 Video `POST /api/orb/decode/file`: Completed with `OpenCV 5.0.0`, `motion_class="pan-right"`, `effective_fps=15.86`, `scenes=1`, and Gemini reconstructed prompt (`2974 chars`).
   - Unit tests: `pytest` (`44 passed`) + `vitest` (`31 passed`).
 
+## 2026-10-17 — Fix `?judge=OPENCV2026` Startup Race Condition & Localhost Web3 Wallet Connection
+
+- **Fix 1 — `?judge=OPENCV2026` Startup Race Condition & UI State (`web/wallet.js`, `web/app.js`):**
+  - Previously, `loadConfig()` and `checkJudgeUrlParam()` ran concurrently on startup (`void loadConfig(); checkJudgeUrlParam();`). When `window.ethereum` was present, `GET /api/orb/credits/config` resolved in ~5ms while `POST /api/orb/judge-session` (~170ms) was still in flight (`isJudge === false`), causing `loadConfig()` to invoke `restoreWallet()` -> `window.ethereum.request({ method: "eth_accounts" })` under the same `authEpoch` and overwrite or clear the newly created Judge Demo session.
+  - Updated `web/wallet.js` to extract `?judge=<code>` synchronously (`extractJudgeUrlCode()`) and `await checkJudgeUrlParam()` **sequentially after** `requestConfig()` inside `loadConfig()`, returning before `restoreWallet()` can run.
+  - Added `judgeActivating` guard and incremented `authEpoch += 1` inside `activateJudgeDemo()` so `restoreWallet()`, `restoreSession()`, `accountsChanged`, and `chainChanged` never overwrite or clear an activating or active Judge session.
+  - Updated Judge Demo UI state in `web/wallet.js` and `web/app.js` to display `"Judge Demo Mode is Active"` with `"10 test credits available"`, keep `#header-wallet` as `"Connect Wallet"`, keep `#wallet-connect` (`"Connect and sign"`) enabled, and label `#wallet-disconnect` as `"Exit Judge Mode / Connect Wallet"` so users can switch to a real Web3 wallet at any time.
+- **Fix 2 — Localhost Web3 Wallet Connection & Treasury Configuration (`prometheus/api/app.py`, `prometheus/api/orb_credits.py`, `web/wallet.js`):**
+  - Updated `_load_local_dotenv_defaults()` and `create_app()` in `prometheus/api/app.py` to load `ORB_CREDITS_ENABLED`, `ORB_ARBITRUM_RPC_URL`, and `ORB_CREDIT_RECEIVER` / `ORB_TREASURY_ADDRESS` (defaulting locally to checksummed `0xc855D21175D81C852E657169424FA974171394F1`) so `GET /api/orb/credits/config` returns `enabled: true` and `"treasury_address": "0xc855D21175D81C852E657169424FA974171394F1"`.
+  - Updated `challenge()`, `sign_in()`, and `_check_origin()` in `prometheus/api/orb_credits.py` so both `http://127.0.0.1:8000` and `http://localhost:8000` are accepted and the SIWE challenge message binds the exact verified browser origin (`netloc` and `URI`) to prevent MetaMask/Rabby/Zerion domain-mismatch warnings.
+  - Updated `accountsChanged` and `chainChanged` listeners in `web/wallet.js` so initial account selection (`eth_requestAccounts`) and switching to Arbitrum Sepolia (`wallet_switchEthereumChain`) during `connect()` do not prematurely call `clearSession()`.
+- **Verification:**
+  - Rebuilt `web_dist/` (`npm run build`), restarted FastAPI server on `127.0.0.1:8000`, and verified `GET /api/orb/credits/config`, `POST /api/orb/judge-session`, and `POST /api/orb/wallet/challenge` + `/api/orb/wallet/sign-in` across both `http://127.0.0.1:8000` and `http://localhost:8000`.
+  - `pytest tests/test_orb_credits.py -q` (`20 passed`) and `vitest run web/credit-config.test.js` (`29 passed`).
+

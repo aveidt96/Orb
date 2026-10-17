@@ -59,6 +59,8 @@ _UPLOAD_PING_MAX_BYTES = 64 * 1024
 _LOG = logging.getLogger("prometheus.api")
 
 
+_DEFAULT_LOCAL_TREASURY = "0xc855D21175D81C852E657169424FA974171394F1"
+_DEFAULT_ARBITRUM_SEPOLIA_RPC = "https://sepolia-rollup.arbitrum.io/rpc"
 _DOTENV_LOADED = False
 
 
@@ -68,8 +70,6 @@ def _load_local_dotenv_defaults() -> None:
         return
     _DOTENV_LOADED = True
     env_file = _ROOT_DIR / ".env"
-    if not env_file.is_file():
-        return
     safe_keys = {
         "GEMINI_API_KEY",
         "PROMETHEUS_API_KEY",
@@ -77,19 +77,39 @@ def _load_local_dotenv_defaults() -> None:
         "ORB_JUDGE_DEMO_CODE",
         "ORB_JUDGE_DAILY_CAP",
         "ORB_JUDGE_IP_DAILY_LIMIT",
+        "ORB_CREDITS_ENABLED",
+        "ORB_ARBITRUM_RPC_URL",
+        "ORB_CREDIT_RECEIVER",
+        "ORB_TREASURY_ADDRESS",
+        "ORB_CREDIT_PRICE_WEI",
+        "ORB_PAYMENT_CONFIRMATIONS",
     }
-    try:
-        for raw_line in env_file.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, val = line.split("=", 1)
-            key = key.strip()
-            val = val.strip().strip('"').strip("'")
-            if key in safe_keys and val and not os.environ.get(key):
-                os.environ[key] = val
-    except OSError:
-        pass
+    if env_file.is_file():
+        try:
+            for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key in safe_keys and val and not os.environ.get(key):
+                    os.environ[key] = val
+        except OSError:
+            pass
+    if os.environ.get("ORB_ENV", "local") == "local":
+        os.environ.setdefault("ORB_ENV", "local")
+        os.environ.setdefault("ORB_CREDITS_ENABLED", "1")
+        os.environ.setdefault("ORB_PUBLIC_ORIGIN", "http://127.0.0.1:8000")
+        os.environ.setdefault("ORB_ARBITRUM_RPC_URL", _DEFAULT_ARBITRUM_SEPOLIA_RPC)
+        treasury = (
+            os.environ.get("ORB_TREASURY_ADDRESS")
+            or os.environ.get("ORB_CREDIT_RECEIVER")
+            or _DEFAULT_LOCAL_TREASURY
+        ).strip()
+        os.environ.setdefault("ORB_TREASURY_ADDRESS", treasury)
+        os.environ.setdefault("ORB_CREDIT_RECEIVER", treasury)
+        os.environ.setdefault("ORB_JUDGE_IP_DAILY_LIMIT", "50")
 
 
 def _resolve_provider() -> str:
@@ -211,6 +231,7 @@ def create_app(
     orb_ai_service: OrbAIService | None = None,
     orb_credit_service: CreditService | None = None,
 ) -> FastAPI:
+    _load_local_dotenv_defaults()
     provider = provider or os.environ.get("ORB_AI_PROVIDER") or _resolve_provider()
     model = model or os.environ.get("ORB_AI_MODEL")
     public_mode = os.environ.get("ORB_ENV") == "production"
@@ -229,12 +250,17 @@ def create_app(
     validate_public_deployment(upload_root, database_url)
     output_root.mkdir(parents=True, exist_ok=True)
     upload_root.mkdir(parents=True, exist_ok=True)
+    receiver_addr = (
+        os.environ.get("ORB_CREDIT_RECEIVER")
+        or os.environ.get("ORB_TREASURY_ADDRESS")
+        or ""
+    ).strip()
     credit_service = orb_credit_service or CreditService(CreditConfig(
         database=credit_db,
         database_url=database_url if public_mode else "",
         public_origin=os.environ.get("ORB_PUBLIC_ORIGIN", "").rstrip("/"),
         rpc_url=os.environ.get("ORB_ARBITRUM_RPC_URL", ""),
-        receiver=os.environ.get("ORB_CREDIT_RECEIVER", ""),
+        receiver=receiver_addr,
         price_wei=int(os.environ.get("ORB_CREDIT_PRICE_WEI", "1000000000000")),
         confirmations=int(os.environ.get("ORB_PAYMENT_CONFIRMATIONS", "3")),
         enabled=os.environ.get("ORB_CREDITS_ENABLED") == "1",
@@ -583,11 +609,20 @@ def create_app(
 
     @app.get("/api/orb/credits/config")
     def orb_credit_config() -> dict:
+        from eth_utils import is_address, to_checksum_address
+
+        treasury = (
+            to_checksum_address(credit_service.config.receiver)
+            if is_address(credit_service.config.receiver)
+            else ""
+        )
         result = {"enabled": credit_service.config.ready and provider != "mock" and _provider_is_ready(provider),
                 "chain_id": CHAIN_ID,
                 "network": "Arbitrum Sepolia", "testnet_only": True,
+                "treasury_address": treasury,
                 "price_wei": str(credit_service.config.price_wei),
-                "credit_options": [1, 3, 5], "confirmations": credit_service.config.confirmations}
+                "credit_options": [1, 3, 5], "confirmations": credit_service.config.confirmations,
+                "judge_demo_enabled": credit_service.config.judge_ready}
         methods = {"native_eth": {"enabled": "native_eth" in credit_service.config.methods,
                                   "symbol": "ETH", "decimals": 18, "price_wei": str(credit_service.config.price_wei)},
                    "usdg": {"enabled": "usdg" in credit_service.config.methods}}

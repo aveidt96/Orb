@@ -48,6 +48,7 @@ export function initWallet({ onBalance }) {
   let walletAccount = null;
   let verified = false;
   let isJudge = false;
+  let judgeActivating = false;
   let disconnected = sessionStorage.getItem(DISCONNECTED_KEY) === "1";
   let balance = 0;
   let busy = false;
@@ -79,27 +80,38 @@ export function initWallet({ onBalance }) {
 
   function update() {
     const judgeActive = isJudge && verified;
+    const walletConnected = !isJudge && verified;
+    if (judgeActive) {
+      el("wallet-network").textContent = "Judge Demo Mode is Active · OpenCV 2026";
+      switchButton.classList.add("hidden");
+    }
     el("wallet-address").textContent = judgeActive
-      ? `OpenCV 2026 Judge Session · ${address.slice(0, 10)}…${address.slice(-4)}`
+      ? `Judge Demo Mode is Active · ${address.slice(0, 10)}…${address.slice(-4)}`
       : address ? `Authenticated wallet · ${address.slice(0, 6)}…${address.slice(-4)}` : "";
     el("wallet-address").title = address || "";
     el("wallet-balance").textContent = judgeActive
-      ? `${balance} demo credit${balance === 1 ? "" : "s"} available`
+      ? `${balance} test credit${balance === 1 ? "" : "s"} available`
       : `${balance} testnet credit${balance === 1 ? "" : "s"} available`;
     if (headerCreditLabel) {
-      headerCreditLabel.textContent = judgeActive ? "Demo credits" : "Testnet credits";
+      headerCreditLabel.textContent = judgeActive ? "Test credits" : "Testnet credits";
     }
     el("wallet-purchase").classList.toggle("hidden", judgeActive || !verified || configState !== "ready");
     disconnectButton.classList.toggle("hidden", !verified);
-    disconnectButton.textContent = judgeActive ? "Exit Judge Demo" : "Disconnect wallet";
+    disconnectButton.textContent = judgeActive ? "Exit Judge Mode / Connect Wallet" : "Disconnect wallet";
     disconnectButton.disabled = busy;
-    connectButton.textContent = judgeActive ? "Judge Demo Active" : verified ? "Connected" : token ? "Retry session" : walletAccount ? "Sign again" : "Connect and sign";
-    connectButton.disabled = busy || verified || configState !== "ready";
-    headerButton.textContent = judgeActive ? "Judge Mode" : verified ? "Connected" : "Connect Wallet";
-    headerButton.setAttribute("aria-label", judgeActive
-      ? "Judge Demo Mode active. Open Wallet & Credits"
-      : verified ? "Wallet connected. Open Wallet & Credits" : "Connect wallet");
-    headerButton.classList.toggle("connected", verified);
+    connectButton.textContent = walletConnected
+      ? "Connected"
+      : (!judgeActive && token)
+        ? "Retry session"
+        : walletAccount
+          ? "Sign again"
+          : "Connect and sign";
+    connectButton.disabled = busy || walletConnected || configState !== "ready";
+    headerButton.textContent = walletConnected ? "Connected" : "Connect Wallet";
+    headerButton.setAttribute("aria-label", walletConnected
+      ? "Wallet connected. Open Wallet & Credits"
+      : "Connect wallet");
+    headerButton.classList.toggle("connected", walletConnected);
     headerButton.disabled = busy;
     if (headerJudgeButton) {
       headerJudgeButton.textContent = judgeActive ? "Judge Demo · Active" : "Judge Demo";
@@ -157,8 +169,10 @@ export function initWallet({ onBalance }) {
     if (!window.ethereum?.request) throw new Error("Install an Arbitrum-compatible wallet to connect.");
     const chain = await window.ethereum.request({ method: "eth_chainId" });
     const correct = Number.parseInt(chain, 16) === CHAIN_ID;
-    el("wallet-network").textContent = correct ? "Network: Arbitrum Sepolia" : "Wrong network. Switch to Arbitrum Sepolia.";
-    switchButton.classList.toggle("hidden", correct);
+    if (!isJudge && !judgeActivating) {
+      el("wallet-network").textContent = correct ? "Network: Arbitrum Sepolia" : "Wrong network. Switch to Arbitrum Sepolia.";
+      switchButton.classList.toggle("hidden", correct);
+    }
     return correct;
   }
 
@@ -200,6 +214,29 @@ export function initWallet({ onBalance }) {
   }
 
   async function restoreSession() {
+    if (isJudge || judgeActivating) return;
+    const saved = savedSessionData();
+    if (saved?.judgeDemo) {
+      const epoch = authEpoch;
+      if (typeof saved.token !== "string" || !saved.token ||
+          !Number.isFinite(saved.expiresAt) || saved.expiresAt <= Date.now() / 1000) {
+        clearSession("Judge demo session expired.");
+        return;
+      }
+      disconnected = false;
+      sessionStorage.removeItem(DISCONNECTED_KEY);
+      token = saved.token;
+      address = saved.address;
+      isJudge = true;
+      verified = false;
+      el("wallet-network").textContent = "Judge Demo Mode is Active · OpenCV 2026";
+      switchButton.classList.add("hidden");
+      scheduleExpiry(saved.expiresAt);
+      if (await refresh() && epoch === authEpoch) {
+        setFeedback(`Judge Demo Mode is Active. ${balance} test credits available for Decode, Compose, and Enhance.`);
+      }
+      return;
+    }
     if (disconnected) {
       walletAccount = null;
       el("wallet-network").textContent = "Wallet not connected.";
@@ -208,27 +245,8 @@ export function initWallet({ onBalance }) {
       return;
     }
     const epoch = authEpoch;
-    const saved = savedSessionData();
-    if (saved?.judgeDemo) {
-      if (typeof saved.token !== "string" || !saved.token ||
-          !Number.isFinite(saved.expiresAt) || saved.expiresAt <= Date.now() / 1000) {
-        clearSession("Judge demo session expired.");
-        return;
-      }
-      token = saved.token;
-      address = saved.address;
-      isJudge = true;
-      verified = false;
-      el("wallet-network").textContent = "Mode: OpenCV 2026 Judge Demo (No Wallet Needed)";
-      switchButton.classList.add("hidden");
-      scheduleExpiry(saved.expiresAt);
-      if (await refresh() && epoch === authEpoch) {
-        setFeedback("Judge Demo Mode restored. Demo credits ready for Decode, Compose, and Enhance.");
-      }
-      return;
-    }
     const accounts = await window.ethereum?.request?.({ method: "eth_accounts" }) || [];
-    if (epoch !== authEpoch) return;
+    if (epoch !== authEpoch || isJudge || judgeActivating) return;
     walletAccount = accounts[0] || null;
     if (!saved) { update(); return; }
     if (!walletAccount || saved.address?.toLowerCase() !== walletAccount.toLowerCase()) {
@@ -259,13 +277,23 @@ export function initWallet({ onBalance }) {
       if (configState === "unavailable") void loadConfig();
       return;
     }
+    if (!window.ethereum?.request) {
+      if (isJudge && verified) {
+        setFeedback("Install an Arbitrum-compatible wallet (such as MetaMask or Rabby) to connect a Web3 wallet. Judge Demo Mode remains active.");
+        update();
+        return;
+      }
+      clearSession("Install an Arbitrum-compatible wallet to connect.");
+      return;
+    }
     busy = true;
     disconnected = false;
     sessionStorage.removeItem(DISCONNECTED_KEY);
+    authEpoch += 1;
     let attemptEpoch = authEpoch;
     update();
     try {
-      const accounts = await window.ethereum?.request?.({ method: "eth_requestAccounts" });
+      const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
       if (!accounts?.[0]) throw new Error("No wallet account was selected.");
       if (attemptEpoch !== authEpoch && walletAccount?.toLowerCase() !== accounts[0].toLowerCase()) return;
       walletAccount = accounts[0];
@@ -312,8 +340,10 @@ export function initWallet({ onBalance }) {
     }
     if (busy) return false;
     busy = true;
+    judgeActivating = true;
     disconnected = false;
     sessionStorage.removeItem(DISCONNECTED_KEY);
+    authEpoch += 1;
     const attemptEpoch = authEpoch;
     setFeedback("Activating OpenCV 2026 Judge Demo session…");
     update();
@@ -337,19 +367,34 @@ export function initWallet({ onBalance }) {
       sessionStorage.setItem(SESSION_KEY, JSON.stringify({
         token, address, expiresAt: session.expires_at, judgeDemo: true,
       }));
-      el("wallet-network").textContent = "Mode: OpenCV 2026 Judge Demo (No Wallet Needed)";
+      el("wallet-network").textContent = "Judge Demo Mode is Active · OpenCV 2026";
       switchButton.classList.add("hidden");
       if (judgeCodeInput) judgeCodeInput.value = "";
       scheduleExpiry(session.expires_at);
-      setFeedback(`Judge Demo Mode active. ${balance} demo credits unlocked for Decode, Compose, and Enhance.`);
+      setFeedback(`Judge Demo Mode is Active. ${balance} test credits available (${balance} demo credits unlocked for Decode, Compose, and Enhance).`);
       update();
       return true;
     } catch (error) {
+      const saved = savedSessionData();
+      if (saved?.judgeDemo && typeof saved.token === "string" && saved.token &&
+          Number.isFinite(saved.expiresAt) && saved.expiresAt > Date.now() / 1000) {
+        token = saved.token;
+        address = saved.address;
+        isJudge = true;
+        verified = false;
+        scheduleExpiry(saved.expiresAt);
+        if (await refresh() && attemptEpoch === authEpoch) {
+          setFeedback(`Judge Demo Mode is Active. ${balance} test credits available (${balance} demo credits unlocked).`);
+          update();
+          return true;
+        }
+      }
       if (attemptEpoch === authEpoch) {
         setFeedback(error.message || "Judge Demo activation failed.");
       }
       return false;
     } finally {
+      judgeActivating = false;
       busy = false;
       update();
     }
@@ -459,8 +504,32 @@ export function initWallet({ onBalance }) {
     }
   }
 
+  function extractJudgeUrlCode() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const code = (params.get("judge") || "").trim();
+      if (!code) return null;
+      params.delete("judge");
+      const query = params.toString();
+      const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash || ""}`;
+      window.history?.replaceState?.({}, "", nextUrl);
+      return code;
+    } catch {
+      return null;
+    }
+  }
+
+  let pendingJudgeCode = extractJudgeUrlCode();
+
+  async function checkJudgeUrlParam() {
+    if (!pendingJudgeCode) return false;
+    const code = pendingJudgeCode;
+    pendingJudgeCode = null;
+    return await activateJudgeDemo(code);
+  }
+
   async function restoreWallet() {
-    if (isJudge) return;
+    if (isJudge || judgeActivating) return;
     if (savedSessionData()?.judgeDemo) {
       try {
         await restoreSession();
@@ -473,13 +542,18 @@ export function initWallet({ onBalance }) {
     if (!window.ethereum?.request) return;
     // Wallet/network failures must never invalidate a successful config fetch.
     await network().catch(() => {
-      el("wallet-network").textContent = "Wallet network unavailable. Try again.";
+      if (!isJudge && !judgeActivating) {
+        el("wallet-network").textContent = "Wallet network unavailable. Try again.";
+      }
     });
+    if (isJudge || judgeActivating) return;
     try {
       await restoreSession();
     } catch {
-      setFeedback("Could not restore wallet session. Connect and sign again.");
-      update();
+      if (!isJudge && !judgeActivating) {
+        setFeedback("Could not restore wallet session. Connect and sign again.");
+        update();
+      }
     }
   }
 
@@ -494,7 +568,7 @@ export function initWallet({ onBalance }) {
           result = await requestConfig(Math.min(CONFIG_TIMEOUT_MS, deadline - Date.now()));
         } catch {
           configState = "unavailable";
-          if (!isJudge) setFeedback(CONFIG_MESSAGES.unavailable);
+          if (!isJudge && !judgeActivating) setFeedback(CONFIG_MESSAGES.unavailable);
           update();
           if (attempt + 1 < CONFIG_MAX_ATTEMPTS && Date.now() < deadline) {
             const delay = CONFIG_BACKOFF_MS[Math.min(attempt, CONFIG_BACKOFF_MS.length - 1)];
@@ -506,17 +580,20 @@ export function initWallet({ onBalance }) {
         paymentMethods = result.methods;
         configState = config.enabled ? "ready" : "disabled";
         if (configState === "disabled") {
+          if (await checkJudgeUrlParam()) return;
           if (!isJudge) setFeedback(CONFIG_MESSAGES.disabled);
           update();
           if (savedSessionData()?.judgeDemo) void restoreWallet();
           return;
         }
         renderMethods();
+        if (await checkJudgeUrlParam()) return;
         if (!isJudge) setFeedback("Connect a wallet to see your testnet credits.");
         update();
         void restoreWallet();
         return;
       }
+      await checkJudgeUrlParam();
       if (!isJudge) setFeedback("Credit service temporarily unavailable. Try again.");
     })().finally(() => { configTask = null; });
     return configTask;
@@ -641,9 +718,14 @@ export function initWallet({ onBalance }) {
     const oldToken = token;
     const wasJudge = isJudge;
     busy = true;
-    disconnected = true;
-    sessionStorage.setItem(DISCONNECTED_KEY, "1");
-    walletAccount = null;
+    if (wasJudge) {
+      disconnected = false;
+      sessionStorage.removeItem(DISCONNECTED_KEY);
+    } else {
+      disconnected = true;
+      sessionStorage.setItem(DISCONNECTED_KEY, "1");
+      walletAccount = null;
+    }
     clearSession(wasJudge ? "Exiting Judge Demo Mode…" : "Disconnecting wallet from Orb…");
     sessionStorage.removeItem(PENDING_KEY);
     sessionStorage.removeItem(ACTIVE_JOB_KEY);
@@ -665,11 +747,14 @@ export function initWallet({ onBalance }) {
       } catch { /* Some wallets do not support site permission revocation. */ }
     }
     setFeedback(wasJudge
-      ? "Exited Judge Demo Mode."
+      ? "Exited Judge Demo Mode. Connect and sign with your Web3 wallet."
       : revoked ? "Wallet disconnected from Orb." :
         "Wallet disconnected locally. Server sign-out could not be confirmed; the old session will expire.");
     busy = false;
     update();
+    if (wasJudge && window.ethereum?.request && configState === "ready") {
+      void connect();
+    }
   }
 
   function open() { panel.classList.remove("hidden"); headerButton.setAttribute("aria-expanded", "true"); el("wallet-close").focus(); }
@@ -690,15 +775,14 @@ export function initWallet({ onBalance }) {
   }
 
   el("wallet-close").addEventListener("click", () => close(true));
-  connectButton.addEventListener("click", () => void (token && !verified ? refresh() : connect()));
+  connectButton.addEventListener("click", () => void (token && !verified && !isJudge ? refresh() : connect()));
   headerButton.addEventListener("click", () => {
     open();
-    if (isJudge && verified) return;
     if (configState !== "ready") {
       void connect();
       return;
     }
-    if (!verified) void (token ? refresh() : connect());
+    if (!verified || isJudge) void (token && !isJudge ? refresh() : connect());
   });
   headerJudgeButton?.addEventListener("click", () => openJudgePrompt());
   judgeToggleButton?.addEventListener("click", () => {
@@ -740,31 +824,27 @@ export function initWallet({ onBalance }) {
     });
   });
   window.ethereum?.on?.("accountsChanged", (accounts) => {
-    if (disconnected || isJudge) return;
+    if (disconnected || isJudge || judgeActivating) return;
     const next = accounts?.[0] || null;
     if (next?.toLowerCase() === walletAccount?.toLowerCase()) return;
+    const hadWallet = Boolean(walletAccount);
     walletAccount = next;
+    if (busy && !hadWallet && next) return;
     clearSession("Wallet account changed. Sign again.");
   });
-  window.ethereum?.on?.("chainChanged", () => {
-    if (disconnected || isJudge) return;
-    clearSession("Wallet network changed. Switch to Arbitrum Sepolia and sign again.");
+  window.ethereum?.on?.("chainChanged", (chainIdHex) => {
+    if (disconnected || isJudge || judgeActivating) return;
+    const isTargetChain = typeof chainIdHex === "string" && Number.parseInt(chainIdHex, 16) === CHAIN_ID;
+    if (busy && isTargetChain) {
+      void network().catch(() => {});
+      return;
+    }
+    if (!isTargetChain || verified) {
+      clearSession("Wallet network changed. Switch to Arbitrum Sepolia and sign again.");
+    }
     void network().catch(() => {});
   });
-  function checkJudgeUrlParam() {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const code = params.get("judge");
-      if (!code) return;
-      params.delete("judge");
-      const query = params.toString();
-      const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash || ""}`;
-      window.history?.replaceState?.({}, "", nextUrl);
-      void activateJudgeDemo(code);
-    } catch { /* Ignore URL parsing errors in constrained environments */ }
-  }
   void loadConfig();
-  checkJudgeUrlParam();
   update();
   return { open, close, refresh, headers, requireAuthentication, hasCredit: () => verified && balance > 0,
     isAuthenticated: () => verified, walletAddress: () => verified ? address : null,
