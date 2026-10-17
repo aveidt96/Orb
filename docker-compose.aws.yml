@@ -12,18 +12,19 @@ services:
       ORB_ENV: "${ORB_ENV:-local}"
       ORB_COMPUTE_ENV: "${ORB_COMPUTE_ENV:-AWS}"
       ORB_AI_PROVIDER: "${ORB_AI_PROVIDER:-gemini}"
-      ORB_AI_MODEL: "${ORB_AI_MODEL:-gemini-2.5-flash}"
+      ORB_AI_MODEL: "${ORB_AI_MODEL:-gemini-flash-lite-latest}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:?Set GEMINI_API_KEY in .env or shell}"
       ORB_JUDGE_DEMO_CODE: "${ORB_JUDGE_DEMO_CODE:-OPENCV2026}"
       ORB_JUDGE_DAILY_CAP: "${ORB_JUDGE_DAILY_CAP:-150}"
-      ORB_JUDGE_IP_DAILY_LIMIT: "${ORB_JUDGE_IP_DAILY_LIMIT:-5}"
+      ORB_JUDGE_IP_DAILY_LIMIT: "${ORB_JUDGE_IP_DAILY_LIMIT:-25}"
       ORB_PUBLIC_ORIGIN: "${ORB_PUBLIC_ORIGIN:-https://orb-azure-ten.vercel.app}"
       ORB_OUTPUT_DIR: "/data/output"
       ORB_UPLOAD_DIR: "/data/uploads"
       ORB_CREDIT_DB: "/data/orb_credits.sqlite3"
-      ORB_CREDITS_ENABLED: "${ORB_CREDITS_ENABLED:-0}"
-      ORB_ARBITRUM_RPC_URL: "${ORB_ARBITRUM_RPC_URL:-}"
-      ORB_CREDIT_RECEIVER: "${ORB_CREDIT_RECEIVER:-}"
+      ORB_CREDITS_ENABLED: "${ORB_CREDITS_ENABLED:-1}"
+      ORB_ARBITRUM_RPC_URL: "${ORB_ARBITRUM_RPC_URL:-https://sepolia-rollup.arbitrum.io/rpc}"
+      ORB_CREDIT_RECEIVER: "${ORB_CREDIT_RECEIVER:-0xc855D21175D81C852E657169424FA974171394F1}"
+      ORB_TREASURY_ADDRESS: "${ORB_TREASURY_ADDRESS:-0xc855D21175D81C852E657169424FA974171394F1}"
       ORB_CREDIT_PRICE_WEI: "${ORB_CREDIT_PRICE_WEI:-1000000000000}"
     volumes:
       - orb_data:/data
@@ -33,6 +34,14 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: orb-cloudflared-tunnel
+    restart: unless-stopped
+    depends_on:
+      - orb-api
+    command: tunnel --no-autoupdate --url http://orb-api:8000
 
 volumes:
   orb_data:

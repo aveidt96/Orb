@@ -1746,3 +1746,8 @@ a temporary process-only model override described below.
 - **Verification:**
   - `pytest tests/test_opencv_telemetry.py tests/test_orb_credits.py -q` (`24 passed`), `vitest run web/opencv-telemetry.test.js web/credit-config.test.js` (`31 passed`), rebuilt `web_dist/` (`npm run build`), and restarted the local FastAPI server on `http://127.0.0.1:8000`.
   - Staged and committed the OpenCV 5.0 Vision HUD overlay + Preview Mode Switcher changes on `main` (verified clean working tree with no `.env` or temporary files staged) and pushed `main` to `origin`.
+
+## 2026-10-17 — AWS Graviton Zero-Cost HTTPS Tunnel (`cloudflared` Sidecar)
+
+- Updated `docker-compose.aws.yml` to include a `cloudflared` (`cloudflare/cloudflared:latest`, `tunnel --no-autoupdate --url http://orb-api:8000`) sidecar container (`orb-cloudflared-tunnel`) alongside `orb-api`, exposing port `8000` over a free `https://*.trycloudflare.com` HTTPS origin with zero domain cost so `https://orb-azure-ten.vercel.app` can call `/api/*` without browser Mixed Content blocks.
+- Updated `deploy/aws_graviton_setup.sh` to poll `sudo docker logs orb-cloudflared-tunnel` after container launch and print the generated `https://*.trycloudflare.com` URL directly to the terminal for Vercel's `VITE_API_BASE_URL`, plus enabled default Arbitrum Sepolia Web3 credit config (`ORB_CREDITS_ENABLED=1`, `ORB_TREASURY_ADDRESS=0xc855D21175D81C852E657169424FA974171394F1`) alongside Judge Demo Mode (`ORB_JUDGE_DEMO_CODE=OPENCV2026`).
