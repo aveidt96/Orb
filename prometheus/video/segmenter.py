@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from prometheus.config import SegmentationConfig
 from prometheus.video.probe import VideoMetadata
 from prometheus.video.scene_detection import detect_scene_cuts
-from prometheus.video.tools import resolve_tool
+from prometheus.video.tools import VideoToolError, resolve_tool
 
 
 @dataclass
@@ -30,7 +30,10 @@ class Scene:
 class SceneSegmenter:
     def __init__(self, config: SegmentationConfig):
         self.config = config
-        self._ffmpeg = resolve_tool("ffmpeg")
+        try:
+            self._ffmpeg = resolve_tool("ffmpeg")
+        except VideoToolError:
+            self._ffmpeg = "ffmpeg"
 
     def segment(self, video: VideoMetadata) -> list[Scene]:
         cuts = detect_scene_cuts(

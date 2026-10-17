@@ -393,6 +393,32 @@ class GeminiAnalyzer(_BaseRemoteAnalyzer):
             http_options=types.HttpOptions(timeout=120_000),
         )
 
+    @staticmethod
+    def _generate_with_model_fallback(client: Any, model: str, contents: Any, config: Any) -> Any:
+        try:
+            return client.models.generate_content(model=model, contents=contents, config=config)
+        except Exception as exc:
+            msg = str(exc)
+            status = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+            if status == 404 or "404" in msg or "NOT_FOUND" in msg:
+                last_exc: Exception = exc
+                for fallback_model in ("gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite"):
+                    if fallback_model == model:
+                        continue
+                    try:
+                        return client.models.generate_content(
+                            model=fallback_model, contents=contents, config=config
+                        )
+                    except Exception as fb_exc:
+                        last_exc = fb_exc
+                        fb_msg = str(fb_exc)
+                        fb_status = getattr(fb_exc, "code", None) or getattr(fb_exc, "status_code", None)
+                        if fb_status == 404 or "404" in fb_msg or "NOT_FOUND" in fb_msg:
+                            continue
+                        raise
+                raise last_exc
+            raise
+
     def _call_model(
         self,
         metadata: VideoMetadata,
@@ -407,10 +433,11 @@ class GeminiAnalyzer(_BaseRemoteAnalyzer):
         for frame in frames:
             parts.append(self._image_part(frame.path))
         with ai_call():
-            response = self._api_client.models.generate_content(
-                model=self._model,
-                contents=parts,
-                config=self._config(SYSTEM_PROMPT),
+            response = self._generate_with_model_fallback(
+                self._api_client,
+                self._model,
+                parts,
+                self._config(SYSTEM_PROMPT),
             )
         return self._extract_text(response)
 
@@ -425,10 +452,11 @@ class GeminiAnalyzer(_BaseRemoteAnalyzer):
         for frame in frames:
             parts.append(self._image_part(frame.path))
         with ai_call():
-            response = self._api_client.models.generate_content(
-                model=self._model,
-                contents=parts,
-                config=self._config(SCENE_SYSTEM_PROMPT),
+            response = self._generate_with_model_fallback(
+                self._api_client,
+                self._model,
+                parts,
+                self._config(SCENE_SYSTEM_PROMPT),
             )
         return self._extract_text(response)
 

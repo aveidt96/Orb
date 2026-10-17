@@ -47,6 +47,47 @@ def cap_evenly(items: list, limit: int) -> list:
     return [items[int(i * step)] for i in range(limit)]
 
 
+def _extract_frame_opencv(
+    video_path: str,
+    timestamp: float,
+    destination: Path,
+    image_format: str,
+    image_quality: int,
+    fallback_error: Exception,
+) -> None:
+    try:
+        import cv2
+    except ImportError:
+        raise fallback_error
+
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        if not cap.isOpened():
+            raise fallback_error
+        cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, float(timestamp) * 1000.0))
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if total > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, total - 1))
+                ok, frame = cap.read()
+            if not ok or frame is None:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ok, frame = cap.read()
+        if not ok or frame is None:
+            raise fallback_error
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        params: list[int] = []
+        if image_format.lower() in {"jpg", "jpeg"}:
+            jpg_q = max(60, min(95, 100 - int(image_quality) * 3))
+            params = [int(cv2.IMWRITE_JPEG_QUALITY), jpg_q]
+        if not cv2.imwrite(str(destination), frame, params) or not destination.is_file():
+            raise fallback_error
+    finally:
+        cap.release()
+
+
 @timed("frame_extraction")
 def extract_frame(
     ffmpeg: str,
@@ -67,20 +108,26 @@ def extract_frame(
         cmd += ["-q:v", str(image_quality)]
     cmd.append(str(destination))
     try:
-        result = process_run(subprocess.run, "ffmpeg", cmd, capture_output=True, text=True, timeout=120)
-    except OSError as exc:
-        raise VideoToolError(f"Could not start ffmpeg executable {ffmpeg}: {exc}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise PrometheusError(f"Frame extraction timed out at t={timestamp:.3f}s") from exc
-    if result.returncode != 0 or not destination.is_file() or destination.stat().st_size == 0:
-        detail = result.stderr.strip() or "no output frame produced"
-        raise PrometheusError(f"Frame extraction failed at t={timestamp:.3f}s: {detail}")
+        try:
+            result = process_run(subprocess.run, "ffmpeg", cmd, capture_output=True, text=True, timeout=30)
+        except OSError as exc:
+            raise VideoToolError(f"Could not start ffmpeg executable {ffmpeg}: {exc}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise PrometheusError(f"Frame extraction timed out at t={timestamp:.3f}s") from exc
+        if result.returncode != 0 or not destination.is_file() or destination.stat().st_size == 0:
+            detail = result.stderr.strip() or "no output frame produced"
+            raise PrometheusError(f"Frame extraction failed at t={timestamp:.3f}s: {detail}")
+    except (VideoToolError, PrometheusError) as exc:
+        _extract_frame_opencv(video_path, timestamp, destination, image_format, image_quality, exc)
 
 
 class FrameSampler:
     def __init__(self, config: SamplingConfig):
         self.config = config
-        self._ffmpeg = resolve_tool("ffmpeg")
+        try:
+            self._ffmpeg = resolve_tool("ffmpeg")
+        except VideoToolError:
+            self._ffmpeg = "ffmpeg"
 
     def sample(self, video: VideoMetadata, output_dir: Path, *, extraction_cache: dict | None = None) -> list[SampledFrame]:
         output_dir = Path(output_dir)

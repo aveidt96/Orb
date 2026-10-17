@@ -142,3 +142,43 @@ def test_orb_ai_service_attaches_opencv_telemetry_and_clahe_frame(tmp_path: Path
     assert "[OpenCV Deterministic Telemetry" in contents[0].text
     assert contents[1].inline_data.data == img_path.read_bytes()
     assert contents[2].inline_data.mime_type == "image/jpeg"
+
+
+def test_opencv_native_video_fallbacks_when_ffmpeg_missing(tmp_path: Path, monkeypatch):
+    from prometheus.config import SamplingConfig
+    from prometheus.video.probe import probe_video
+    from prometheus.video.sampler import FrameSampler
+    from prometheus.video.scene_detection import detect_scene_cuts
+    from prometheus.video.tools import VideoToolError
+
+    video_path = tmp_path / "synthetic.mp4"
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(video_path), fourcc, 12.0, (160, 120))
+    for idx in range(24):
+        frame = np.full((120, 160, 3), 25 if idx < 12 else 220, dtype=np.uint8)
+        cv2.circle(frame, (30 + idx * 3, 60), 16, (0, 180, 255), -1)
+        writer.write(frame)
+    writer.release()
+
+    def _missing_tool(name: str) -> str:
+        raise VideoToolError(f"Required external tool '{name}' is unavailable.")
+
+    monkeypatch.setattr("prometheus.video.probe.resolve_tool", _missing_tool)
+    monkeypatch.setattr("prometheus.video.segmenter.resolve_tool", _missing_tool)
+    monkeypatch.setattr("prometheus.video.sampler.resolve_tool", _missing_tool)
+
+    metadata = probe_video(video_path)
+    assert metadata.width == 160
+    assert metadata.height == 120
+    assert metadata.duration >= 1.5
+
+    cuts = detect_scene_cuts("__missing_ffmpeg_binary__", str(video_path), metadata.duration, 0.25)
+    assert isinstance(cuts, list)
+    assert len(cuts) >= 1
+
+    sampler = FrameSampler(SamplingConfig(strategy="uniform", frame_count=3))
+    sampled = sampler.sample(metadata, tmp_path / "frames")
+    assert len(sampled) == 3
+    assert all(f.path.is_file() for f in sampled)
+
+

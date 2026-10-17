@@ -1686,3 +1686,28 @@ a temporary process-only model override described below.
 - Verified `git status --short` on `main`—all modified and new files belong to Sprints 1–4 (`Dockerfile`, `HANDOFF.md`, `BENCHMARKS.md`, `SUBMISSION_GUIDE.md`, `docker-compose.aws.yml`, `deploy/aws_graviton_setup.sh`, `requirements.txt`, `prometheus/`, `scripts/benchmark_opencv.py`, `tests/`, and `web/`), with zero temporary or untracked junk artifacts.
 - Staged all Sprint 1–4 files and created a single clean commit on `main`: `feat(opencv): add OpenCV 5.0 agentic vision telemetry, judge demo mode, and AWS Graviton deployment kit` (not pushed to `origin`, awaiting local browser testing).
 - Started the local FastAPI preview server in the background on `http://127.0.0.1:8000` with `ORB_JUDGE_DEMO_CODE=OPENCV2026`, `ORB_JUDGE_DAILY_CAP=150`, and `ORB_COMPUTE_ENV=AWS` for browser testing at `http://127.0.0.1:8000/?judge=OPENCV2026`.
+
+## 2026-10-17 — Live Diagnostic Fix: Wake-Up Stall, Stale `web_dist/` Bundle, and OpenCV 5.0 Native Video Fallbacks
+
+- **Root Cause 1 — Stale `web_dist/` Bundle & Localhost API Routing (`web/api-url.js`, `web/wallet.js`, `web_dist/`):**
+  - `prometheus/api/app.py` serves `_BUILT_WEB_DIR` (`web_dist/`) when it exists. The pre-existing `web_dist/` bundle predated Sprints 1–3 and had `VITE_API_BASE_URL` baked in, causing local runs to wait on a cold Render instance (`"Credit service is starting…"` / `"Orb is taking longer to start. Try again shortly."`).
+  - Updated `web/api-url.js` so `window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"` **always** returns same-origin `""` regardless of build-time `VITE_API_BASE_URL`, and guarded `import.meta.env` in `web/api-url.js` and `web/wallet.js`.
+  - Updated `_check_origin()` in `prometheus/api/orb_credits.py` to accept both `http://127.0.0.1(:port)` and `http://localhost(:port)` when `ORB_ENV == "local"`.
+  - Rebuilt `web_dist/` with `npm run build` so FastAPI serves the updated `#header-judge` and `#res-opencv-card` assets locally.
+- **Root Cause 2 — Pure OpenCV 5.0 (`cv2.VideoCapture`) Fallbacks for Video Upload & Fast `/api/ready`:**
+  - Cached verified video tools in `_VERIFIED_VIDEO_TOOLS` in `prometheus/api/app.py` (`_verify_video_tool`) and added an OpenCV (`import cv2`) fallback so `/api/ready` responds in `<10 ms` without spawning `ffmpeg -version` subprocesses on every poll.
+  - Added pure OpenCV 5.0 (`cv2.VideoCapture`) native fallbacks across the entire video pipeline whenever `ffprobe` or `ffmpeg` is missing or fails:
+    - `prometheus/video/probe.py` (`_probe_video_opencv`): Extracts width, height, FPS, frame count, duration, and FOURCC codec via `cv2.VideoCapture`.
+    - `prometheus/video/scene_detection.py` (`_detect_scene_cuts_opencv`): Computes consecutive 2D HSV histogram distances (`1.0 - cv2.compareHist(..., cv2.HISTCMP_CORREL)`) at ~12 Hz to detect scene cuts without `ffmpeg`.
+    - `prometheus/video/sampler.py` (`_extract_frame_opencv`, `FrameSampler.__init__`) and `prometheus/video/segmenter.py` (`SceneSegmenter.__init__`): Seek to target timestamps (`cv2.CAP_PROP_POS_MSEC`) and write PNG frames via `cv2.imwrite`.
+- **Root Cause 3 — Gemini Model Availability & `.env` Key Loading (`prometheus/analysis/analyzer.py`, `prometheus/api/app.py`):**
+  - Updated `GeminiAnalyzer._generate_with_model_fallback` in `prometheus/analysis/analyzer.py` to iterate through `("gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite")` on `404`/`NOT_FOUND` (since Google deprecated `models/gemini-2.5-flash-lite` for newer API keys in favor of `gemini-flash-lite-latest`).
+  - Added `_load_local_dotenv_defaults()` in `prometheus/api/app.py` to load `GEMINI_API_KEY` and `ORB_JUDGE_DEMO_CODE` from `.env` when running outside `pytest`.
+- **Live End-to-End Verification Against Running Server (`http://127.0.0.1:8000`):**
+  - `GET /`: `200 OK` (`#header-judge` and `#res-opencv-card` present).
+  - `GET /api/ready` & `GET /api/orb/credits/config`: `200 OK` (`5.9 ms`, `enabled=True`, `judge_demo_enabled=True`).
+  - `POST /api/orb/judge-session` (`{"code": "OPENCV2026"}`): `200 OK` (`credits=10`).
+  - Live Image `POST /api/orb/decode/file`: Completed with `OpenCV 5.0.0 (AWS x86_64 AVX2)`, `clahe_applied=True`, and Gemini reconstructed prompt (`262 chars`).
+  - Live 2-Second MP4 Video `POST /api/orb/decode/file`: Completed with `OpenCV 5.0.0`, `motion_class="pan-right"`, `effective_fps=15.86`, `scenes=1`, and Gemini reconstructed prompt (`2974 chars`).
+  - Unit tests: `pytest` (`44 passed`) + `vitest` (`31 passed`).
+

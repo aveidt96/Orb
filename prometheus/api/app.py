@@ -59,7 +59,41 @@ _UPLOAD_PING_MAX_BYTES = 64 * 1024
 _LOG = logging.getLogger("prometheus.api")
 
 
+_DOTENV_LOADED = False
+
+
+def _load_local_dotenv_defaults() -> None:
+    global _DOTENV_LOADED
+    if _DOTENV_LOADED or "PYTEST_CURRENT_TEST" in os.environ:
+        return
+    _DOTENV_LOADED = True
+    env_file = _ROOT_DIR / ".env"
+    if not env_file.is_file():
+        return
+    safe_keys = {
+        "GEMINI_API_KEY",
+        "PROMETHEUS_API_KEY",
+        "GOOGLE_API_KEY",
+        "ORB_JUDGE_DEMO_CODE",
+        "ORB_JUDGE_DAILY_CAP",
+        "ORB_JUDGE_IP_DAILY_LIMIT",
+    }
+    try:
+        for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key in safe_keys and val and not os.environ.get(key):
+                os.environ[key] = val
+    except OSError:
+        pass
+
+
 def _resolve_provider() -> str:
+    _load_local_dotenv_defaults()
     env = os.environ.get("PROMETHEUS_PROVIDER")
     if env:
         return env
@@ -103,9 +137,14 @@ def _verify_writable_directory(path: Path) -> None:
         probe.unlink(missing_ok=True)
 
 
+_VERIFIED_VIDEO_TOOLS: set[str] = set()
+
+
 def _verify_video_tool(name: str) -> None:
-    executable = resolve_tool(name)
+    if name in _VERIFIED_VIDEO_TOOLS:
+        return
     try:
+        executable = resolve_tool(name)
         subprocess.run(
             [executable, "-version"],
             check=True,
@@ -114,8 +153,16 @@ def _verify_video_tool(name: str) -> None:
             stderr=subprocess.DEVNULL,
             timeout=3,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise VideoToolError(f"{name} executable is unavailable") from exc
+        _VERIFIED_VIDEO_TOOLS.add(name)
+    except (VideoToolError, OSError, subprocess.SubprocessError) as exc:
+        try:
+            import cv2  # noqa: F401
+            _VERIFIED_VIDEO_TOOLS.add(name)
+            return
+        except ImportError:
+            if isinstance(exc, VideoToolError):
+                raise
+            raise VideoToolError(f"{name} executable is unavailable") from exc
 
 
 def _safe_upload_attempt_id(value: str | None) -> str:

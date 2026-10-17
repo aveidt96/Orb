@@ -212,8 +212,19 @@ class CreditService:
             db.execute("DELETE FROM sessions WHERE token_hash=? AND wallet=?", (token_hash, wallet))
 
     def _check_origin(self, origin: str | None) -> None:
-        if origin != self.config.public_origin:
-            raise CreditError("Wallet request origin is not trusted.", 403)
+        if origin == self.config.public_origin:
+            return
+        if origin and self.config.public_origin and os.environ.get("ORB_ENV") == "local":
+            p_orig = urlparse(origin)
+            p_pub = urlparse(self.config.public_origin)
+            if (
+                p_orig.scheme == "http"
+                and p_pub.scheme == "http"
+                and p_orig.hostname in {"localhost", "127.0.0.1"}
+                and p_pub.hostname in {"localhost", "127.0.0.1"}
+            ):
+                return
+        raise CreditError("Wallet request origin is not trusted.", 403)
 
     def create_judge_session(self, code: str, client_ip: str, origin: str | None = None) -> dict:
         if not self.config.judge_ready:

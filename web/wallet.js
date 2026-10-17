@@ -421,7 +421,7 @@ export function initWallet({ onBalance }) {
     if (!loaded || Array.isArray(loaded) || typeof loaded.enabled !== "boolean") {
       throw new Error("Invalid credit configuration response.");
     }
-    if (import.meta.env.VITE_ORB_DEPLOYMENT_TARGET === "usdg-staging"
+    if (import.meta.env?.VITE_ORB_DEPLOYMENT_TARGET === "usdg-staging"
         && (!(loaded.payment_methods?.usdg?.enabled || loaded.payment_method === "usdg")
             || loaded.deployment_target !== "usdg-staging")) {
       throw new Error("This preview requires the isolated USDG staging backend.");

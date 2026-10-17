@@ -86,9 +86,11 @@ class OrbAIService:
                                     data=extra.read_bytes(), mime_type=_mime(extra),
                                 ))
                 with ai_call():
-                    response = self.analyzer._api_client.models.generate_content(
-                        model=self.model, contents=parts,
-                        config=GeminiAnalyzer._config(system),
+                    response = GeminiAnalyzer._generate_with_model_fallback(
+                        self.analyzer._api_client,
+                        self.model,
+                        parts,
+                        GeminiAnalyzer._config(system),
                     )
                 return GeminiAnalyzer._extract_text(response)
             content: list[dict[str, Any]] = [{"type": "text", "text": user}]
