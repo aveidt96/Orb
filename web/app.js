@@ -989,12 +989,14 @@ export function renderOpenCVTelemetry(cv) {
     els.resOpencvBadges.replaceChildren();
     const fps = cv.effective_fps ?? cv.motion_and_continuity?.effective_fps;
     const claheActive = Boolean(cv.clahe_applied || cv.clahe_triggered);
+    const aws = cv.aws_integration || null;
     const versionLabel = `OpenCV ${cv.opencv_version || "5.0.0"}${cv.compute_badge ? ` · ${cv.compute_badge}` : ""}`;
     const badgeSpecs = [
       { text: versionLabel, highlight: false },
       cv.processing_ms !== undefined ? { text: `Latency: ${Number(cv.processing_ms).toFixed(1)} ms`, highlight: false } : null,
       fps !== undefined ? { text: `Throughput: ${Number(fps).toFixed(1)} FPS`, highlight: false } : null,
       claheActive ? { text: "CLAHE Auto-Recovery: Active", highlight: true } : null,
+      aws?.enabled && aws.s3_bucket ? { text: `AWS S3: ${aws.s3_bucket}`, highlight: true } : null,
     ].filter(Boolean);
     for (const spec of badgeSpecs) {
       const span = document.createElement("span");
@@ -1084,6 +1086,7 @@ export function renderOpenCVTelemetry(cv) {
     const cl = cv.color_and_lighting || {};
     const sg = cv.sharpness_and_geometry || {};
     const mc = cv.motion_and_continuity || {};
+    const aws = cv.aws_integration || null;
     const rows = [];
     if (cl.lighting_key !== undefined) {
       rows.push([
@@ -1105,6 +1108,12 @@ export function renderOpenCVTelemetry(cv) {
       rows.push([
         "Optical Flow & Continuity (cv2.calcOpticalFlowFarneback / compareHist)",
         `Motion: ${mc.dominant_motion} (dx=${mc.mean_dx}, dy=${mc.mean_dy}, radial=${mc.radial_flow}) · HSV continuity ${mc.mean_hist_correlation} (${mc.continuity_class})`,
+      ]);
+    }
+    if (aws?.enabled && aws.s3_bucket) {
+      rows.push([
+        "AWS Cloud Persistence (Amazon S3)",
+        `Bucket: s3://${aws.s3_bucket} (${aws.s3_region || "us-east-1"}) · Synced: ${(aws.artifacts_synced || []).join(", ") || "ready"}`,
       ]);
     }
     for (const [title, text] of rows) {

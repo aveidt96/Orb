@@ -189,3 +189,37 @@ def test_opencv_native_video_fallbacks_when_ffmpeg_missing(tmp_path: Path, monke
     assert all(f.path.is_file() for f in sampled)
 
 
+def test_aws_s3_artifact_sync_and_telemetry_metadata(tmp_path: Path, monkeypatch):
+    from unittest.mock import MagicMock
+    from prometheus.storage.aws_s3 import sync_opencv_artifacts_to_s3
+
+    monkeypatch.setenv("ORB_AWS_S3_BUCKET", "orb-opencv-2026-artifacts")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("ORB_COMPUTE_ENV", "AWS")
+
+    img = np.full((96, 96, 3), 22, dtype=np.uint8)
+    cv2.rectangle(img, (16, 16), (80, 80), (45, 38, 32), thickness=2)
+    img_path = tmp_path / "dark_s3_test.png"
+    cv2.imwrite(str(img_path), img)
+
+    run_dir = tmp_path / "job_s3"
+    telemetry = analyze_image_cv(img_path, output_dir=run_dir)
+    cv_dict = telemetry.to_dict()
+
+    assert "AWS S3" in cv_dict["compute_badge"]
+
+    fake_s3 = MagicMock()
+    aws_meta = sync_opencv_artifacts_to_s3("job999", run_dir, cv_dict, s3_client=fake_s3)
+
+    assert aws_meta["enabled"] is True
+    assert aws_meta["s3_bucket"] == "orb-opencv-2026-artifacts"
+    assert aws_meta["s3_region"] == "us-east-1"
+    assert "Amazon S3" in aws_meta["services"]
+    assert "AWS Graviton / Compute Ready" in aws_meta["services"]
+    assert set(aws_meta["artifacts_synced"]) == {
+        "opencv_hud_overlay.jpg",
+        "opencv_clahe_enhanced.jpg",
+        "opencv_telemetry.json",
+    }
+    assert (run_dir / "opencv_telemetry.json").is_file()
+    assert fake_s3.upload_file.call_count == 3

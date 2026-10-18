@@ -83,6 +83,14 @@ def _load_local_dotenv_defaults() -> None:
         "ORB_TREASURY_ADDRESS",
         "ORB_CREDIT_PRICE_WEI",
         "ORB_PAYMENT_CONFIRMATIONS",
+        "ORB_COMPUTE_ENV",
+        "ORB_AWS_S3_BUCKET",
+        "AWS_S3_BUCKET",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
     }
     if env_file.is_file():
         try:
@@ -835,10 +843,17 @@ def create_app(
                     "name": job.video_name, "width": media["width"], "height": media["height"],
                     "preview_url": f"/api/jobs/{job.id}/frames/{job.source_file}",
                 }
+            cv_meta = payload.get("opencv_telemetry")
+            if isinstance(cv_meta, dict):
+                try:
+                    from prometheus.storage.aws_s3 import sync_opencv_artifacts_to_s3
+
+                    sync_opencv_artifacts_to_s3(job.id, run_dir, cv_meta)
+                except Exception as exc:
+                    _LOG.warning("AWS S3 telemetry sync skipped: %s", exc)
             if not public_mode:
                 with stage("result_assembly"):
                     shutil.copyfile(source, run_dir / job.source_file)
-                cv_meta = payload.get("opencv_telemetry")
                 if isinstance(cv_meta, dict):
                     if cv_meta.get("clahe_triggered") or (run_dir / "opencv_clahe_enhanced.jpg").is_file():
                         cv_meta["clahe_preview_url"] = f"/api/jobs/{job.id}/frames/opencv_clahe_enhanced.jpg"

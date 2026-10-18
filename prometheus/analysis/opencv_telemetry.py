@@ -33,7 +33,17 @@ CLAHE_CONTRAST_THRESHOLD = 32.0
 BLUR_SHARPNESS_THRESHOLD = 45.0
 
 
+from prometheus.storage.aws_s3 import build_aws_integration_metadata
+
+
 @functools.lru_cache(maxsize=1)
+def _cached_cv_build_info() -> str:
+    try:
+        return cv2.getBuildInformation() or ""
+    except Exception:
+        return ""
+
+
 def detect_compute_runtime() -> dict[str, Any]:
     """Detect CPU architecture and OpenCV SIMD acceleration flags (NEON / AVX2 / etc.)."""
     raw_machine = (platform.machine() or "unknown").strip()
@@ -45,11 +55,7 @@ def detect_compute_runtime() -> dict[str, Any]:
     else:
         arch = raw_machine or "CPU"
 
-    build_info = ""
-    try:
-        build_info = cv2.getBuildInformation() or ""
-    except Exception:
-        build_info = ""
+    build_info = _cached_cv_build_info()
 
     cpu_section = ""
     match = re.search(
@@ -82,14 +88,20 @@ def detect_compute_runtime() -> dict[str, Any]:
         else:
             primary_simd = ""
 
+    s3_bucket = (
+        os.environ.get("ORB_AWS_S3_BUCKET", "").strip()
+        or os.environ.get("AWS_S3_BUCKET", "").strip()
+    )
     cloud_env = os.environ.get("ORB_COMPUTE_ENV", "").strip()
-    if not cloud_env and os.environ.get("AWS_EXECUTION_ENV"):
+    if not cloud_env and (os.environ.get("AWS_EXECUTION_ENV") or s3_bucket):
         cloud_env = "AWS"
+    if s3_bucket and "S3" not in cloud_env.upper():
+        cloud_env = f"{cloud_env} S3".strip() if cloud_env else "AWS S3"
 
     badge_parts = [p for p in [arch, primary_simd] if p]
     compute_badge = " ".join(badge_parts)
     if cloud_env:
-        compute_badge = f"{cloud_env} {compute_badge}".strip()
+        compute_badge = f"{cloud_env} · {compute_badge}".strip(" ·") if s3_bucket else f"{cloud_env} {compute_badge}".strip()
 
     return {
         "arch": arch,
@@ -112,6 +124,7 @@ class OpenCVTelemetry:
     cv_grounding_brief: str = ""
     clahe_enhanced_path: Path | None = None
     hud_overlay_path: Path | None = None
+    aws_integration: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         fps = (
@@ -121,11 +134,21 @@ class OpenCVTelemetry:
         )
         clahe_active = self.clahe_enhanced_path is not None
         runtime = detect_compute_runtime()
+        default_artifacts: list[str] = []
+        if self.hud_overlay_path is not None:
+            default_artifacts.append(self.hud_overlay_path.name)
+        if self.clahe_enhanced_path is not None:
+            default_artifacts.append(self.clahe_enhanced_path.name)
+        default_artifacts.append("opencv_telemetry.json")
+        aws_meta = self.aws_integration or build_aws_integration_metadata(
+            default_artifacts if os.environ.get("ORB_AWS_S3_BUCKET", "").strip() else []
+        )
         payload: dict[str, Any] = {
             "opencv_version": self.opencv_version,
             "compute_arch": runtime["arch"],
             "compute_badge": runtime["compute_badge"],
             "compute_runtime": runtime,
+            "aws_integration": aws_meta,
             "media_kind": self.media_kind,
             "processing_ms": round(self.processing_ms, 3),
             "effective_fps": fps,

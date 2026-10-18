@@ -6,30 +6,31 @@ Built for the **OpenCV AI Competition 2026 (Powered by AWS)**, Orb pairs a deter
 
 ---
 
-## 1. System Architecture (`Vercel -> AWS Graviton + OpenCV 5.0 -> Gemini VLM`)
+## 1. System Architecture (`Vercel -> AWS Graviton / Amazon S3 + OpenCV 5.0 -> Gemini VLM`)
 
 ```mermaid
 flowchart TB
     subgraph Client["Frontend — Vercel Edge (orb-azure-ten.vercel.app)"]
         UI["Liquid-Glass Web UI\n(Decode · Compose · Enhance)"]
         GateUI["Access Gate\n• Arbitrum Sepolia Wallet (ETH / USDG)\n• Zero-Friction Judge Demo (?judge=OPENCV2026)"]
-        TelemetryUI["OpenCV 5.0 Agentic Telemetry Card\n• Compute & Latency/FPS Badges\n• Perception → Decision → Action Trace\n• Interactive CLAHE Recovery Preview\n• k-Means Swatches & Optical Flow Metrics"]
+        TelemetryUI["OpenCV 5.0 Agentic Telemetry Card\n• Compute, AWS S3 & Latency/FPS Badges\n• Perception → Decision → Action Trace\n• Vision HUD & CLAHE Preview Switcher\n• k-Means Swatches & Optical Flow Metrics"]
     end
 
-    subgraph AWS["AWS Cloud — EC2 Graviton2 t4g.small (Ubuntu 24.04 Arm64 / Docker)"]
+    subgraph AWS["AWS Cloud — EC2 Graviton2 (Arm64) + Amazon S3 Telemetry & Artifact Store"]
         API["FastAPI Backend (prometheus/api/app.py)\nuvicorn :8000 · CreditService + Rate Limiter"]
-        FFmpeg["FFmpeg Scene & Frame Pipeline\n(ffprobe + scene cut detector + frame sampler)"]
+        FFmpeg["FFmpeg / OpenCV 5.0 Native Video Pipeline\n(probe + scene cut detector + frame sampler)"]
+        S3["Amazon S3 Artifact Store (prometheus/storage/aws_s3.py)\ns3://<ORB_AWS_S3_BUCKET>/jobs/<job_id>/\n• opencv_hud_overlay.jpg\n• opencv_clahe_enhanced.jpg\n• opencv_telemetry.json"]
 
         subgraph AgenticCV["OpenCV 5.0 Agentic Vision Engine (prometheus/analysis/opencv_telemetry.py)"]
             Perceive["1. PERCEPTION\n• LAB/HSV Histograms (cv2.cvtColor, cv2.calcHist)\n• Dominant Palette k=5 (cv2.kmeans)\n• Focus Sharpness (cv2.Laplacian)\n• Rule-of-Thirds Saliency (cv2.Canny, cv2.moments)\n• Structural Geometry (cv2.HoughLinesP)\n• Dense Optical Flow (cv2.calcOpticalFlowFarneback)\n• Shot Continuity (cv2.compareHist)"]
             Decide["2. DECISION\n• Underexposed / Low-Contrast Gate\n  (mean_luminance < 60 or contrast_std < 32)\n• Motion-Blur Keyframe Gate\n  (Laplacian variance < 45.0)\n• Deterministic Telemetry Grounding"]
-            Act["3. ACTION\n• Autonomous LAB L-Channel CLAHE Recovery\n  (cv2.createCLAHE → opencv_clahe_enhanced.jpg)\n• Sharpness-Gated Keyframe Ranking & Filtering\n• Inject cv_grounding_brief into VLM Context"]
+            Act["3. ACTION\n• Autonomous LAB L-Channel CLAHE Recovery\n  (cv2.createCLAHE → opencv_clahe_enhanced.jpg)\n• OpenCV 5.0 Vision HUD Diagnostic Overlay\n  (opencv_hud_overlay.jpg)\n• Sharpness-Gated Keyframe Ranking & Filtering\n• Inject cv_grounding_brief into VLM Context"]
             Perceive --> Decide --> Act
         end
     end
 
     subgraph External["External Services"]
-        Gemini["Google Gemini 2.5 Flash VLM\n(Structured JSON Visual Synthesis)"]
+        Gemini["Google Gemini Flash VLM\n(Structured JSON Visual Synthesis)"]
         Arb["Arbitrum Sepolia RPC\n(On-Chain ETH / Paxos USDG Verification)"]
     end
 
@@ -37,9 +38,10 @@ flowchart TB
     GateUI -->|"POST /api/orb/judge-session or Bearer Token"| API
     API -->|"Verify On-Chain Tx"| Arb
     API --> FFmpeg --> Perceive
+    Act -->|"Sync HUD, CLAHE & Telemetry JSON"| S3
     Act -->|"Original + CLAHE Frame + OpenCV Grounding Brief"| Gemini
     Gemini -->|"orb_result.json + opencv_telemetry"| API
-    API -->|"JSON Result + CLAHE Preview Stream"| TelemetryUI
+    API -->|"JSON Result + Vision HUD & CLAHE Previews"| TelemetryUI
 ```
 
 ---
@@ -105,12 +107,19 @@ Then open **`http://127.0.0.1:8000/?judge=OPENCV2026`** in your browser:
 
 ---
 
-## 5. Deploying to AWS Graviton (`t4g.small` Free Tier) & Connecting Vercel
+## 5. AWS Integration: Amazon S3 Telemetry Store + AWS EC2 Graviton2
 
-### Step A: Launch on AWS EC2 Graviton2 (`arm64`)
-1. In the AWS Console, launch an **Ubuntu Server 24.04 LTS (HVM), SSD Volume Type — 64-bit (Arm)** instance using the free-tier eligible **`t4g.small`** (or `t4g.micro`) instance type.
-2. Allow inbound TCP ports `22` (SSH), `80` (HTTP), `443` (HTTPS), and `8000` (API) in the Security Group.
-3. SSH into the instance, clone the repository, and run the automated setup script:
+### Component A: Amazon S3 OpenCV 5.0 Telemetry & HUD Artifact Persistence (`prometheus/storage/aws_s3.py`)
+Every visual job (`Decode` and `Compose`) generates deterministic OpenCV 5.0 diagnostic artifacts (`opencv_hud_overlay.jpg`, `opencv_clahe_enhanced.jpg`, and `opencv_telemetry.json`). When `ORB_AWS_S3_BUCKET` and AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) are configured in the backend environment, Orb automatically persists these artifacts to:
+- `s3://<ORB_AWS_S3_BUCKET>/jobs/<job_id>/opencv_hud_overlay.jpg`
+- `s3://<ORB_AWS_S3_BUCKET>/jobs/<job_id>/opencv_clahe_enhanced.jpg`
+- `s3://<ORB_AWS_S3_BUCKET>/jobs/<job_id>/opencv_telemetry.json`
+
+And surfaces `opencv_telemetry["aws_integration"]` in the API response and UI badge (`AWS S3: <bucket>`).
+
+### Component B: Launching on AWS EC2 Graviton2 (`arm64`) with Automatic Cloudflared HTTPS Tunnel
+1. In the AWS Console, launch an **Ubuntu Server 24.04 LTS (HVM), SSD Volume Type — 64-bit (Arm)** instance (`t4g.small` or `t4g.micro`).
+2. SSH into the instance, clone the repository, and run the automated setup script (which launches both `orb-api` and a zero-cost `cloudflared` `https://*.trycloudflare.com` HTTPS tunnel sidecar):
 
 ```bash
 git clone <your-repo-url> project-orb
@@ -119,28 +128,16 @@ chmod +x deploy/aws_graviton_setup.sh
 ./deploy/aws_graviton_setup.sh
 ```
 
-4. Add your `GEMINI_API_KEY` to `.env` and restart the container:
+3. Add your `GEMINI_API_KEY` (and optional `ORB_AWS_S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) to `.env` and restart the container:
 
 ```bash
 nano .env
 sudo docker compose -f docker-compose.aws.yml up -d
 ```
 
-5. Expose HTTPS on your AWS Graviton public IP using Caddy + `nip.io` (zero domain cost, automatic Let's Encrypt TLS certificate required by Vercel):
-
-```bash
-sudo apt-get install -y caddy
-PUBLIC_IP=$(curl -fsS https://checkip.amazonaws.com | tr -d '\n')
-sudo caddy reverse-proxy --from "${PUBLIC_IP}.nip.io" --to 127.0.0.1:8000
-```
-
-Your AWS Graviton HTTPS API origin is now live at `https://<EC2-PUBLIC-IP>.nip.io` (or your custom domain).
-
-### Step B: Point `orb-azure-ten.vercel.app` to the AWS Backend
-As confirmed in `vercel.json`, `web/api-url.js`, and `scripts/check-vercel-env.mjs`, the Vercel frontend routes all `/api/*` requests to the origin configured in the **`VITE_API_BASE_URL`** environment variable at build time (currently pointing to `https://orb-api-7qwv.onrender.com`):
-
+### Component C: Point `orb-azure-ten.vercel.app` to the Backend
 1. Open **Vercel Dashboard $\rightarrow$ Project (`orb`) $\rightarrow$ Settings $\rightarrow$ Environment Variables**.
-2. Update **`VITE_API_BASE_URL`** to your AWS Graviton HTTPS origin (e.g., `https://<EC2-PUBLIC-IP>.nip.io`).
-3. Redeploy the `main` branch on Vercel (`npm run build:vercel` validates `VITE_API_BASE_URL` via `scripts/check-vercel-env.mjs` and builds `web_dist`).
-4. Share the zero-friction judge link in your competition submission form:
+2. Set **`VITE_API_BASE_URL`** to your HTTPS API origin (either your Render + AWS S3 backend or your AWS Graviton `https://*.trycloudflare.com` tunnel URL).
+3. Share the zero-friction judge link in your competition submission form:
    **`https://orb-azure-ten.vercel.app/?judge=OPENCV2026`**
+
