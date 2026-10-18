@@ -107,17 +107,20 @@ Then open **`http://127.0.0.1:8000/?judge=OPENCV2026`** in your browser:
 
 ---
 
-## 5. AWS Integration: Amazon S3 Telemetry Store + AWS EC2 Graviton2
+## 5. AWS Integration: Amazon S3 Telemetry Store + AWS Lambda / Graviton2 (`arm64`)
 
-### Component A: Amazon S3 OpenCV 5.0 Telemetry & HUD Artifact Persistence (`prometheus/storage/aws_s3.py`)
-Every visual job (`Decode` and `Compose`) generates deterministic OpenCV 5.0 diagnostic artifacts (`opencv_hud_overlay.jpg`, `opencv_clahe_enhanced.jpg`, and `opencv_telemetry.json`). When `ORB_AWS_S3_BUCKET` and AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) are configured in the backend environment, Orb automatically persists these artifacts to:
-- `s3://<ORB_AWS_S3_BUCKET>/jobs/<job_id>/opencv_hud_overlay.jpg`
-- `s3://<ORB_AWS_S3_BUCKET>/jobs/<job_id>/opencv_clahe_enhanced.jpg`
-- `s3://<ORB_AWS_S3_BUCKET>/jobs/<job_id>/opencv_telemetry.json`
+### Component A: Amazon S3 OpenCV 5.0 Artifact Store & Pre-Signed URLs (`prometheus/storage/aws_s3.py`)
+Every visual job (`Decode` and `Compose`) generates deterministic OpenCV 5.0 diagnostic artifacts (`opencv_hud_overlay.jpg`, `opencv_clahe_enhanced.jpg`, and `opencv_telemetry.json`). When `ORB_AWS_S3_BUCKET` and AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) are configured in the backend environment, `sync_job_artifacts_to_s3()` automatically uploads these artifacts with a 4-second timeout to:
+- `s3://<ORB_AWS_S3_BUCKET>/orb-jobs/<job_id>/opencv_hud_overlay.jpg`
+- `s3://<ORB_AWS_S3_BUCKET>/orb-jobs/<job_id>/opencv_clahe_enhanced.jpg`
+- `s3://<ORB_AWS_S3_BUCKET>/orb-jobs/<job_id>/opencv_telemetry.json`
 
-And surfaces `opencv_telemetry["aws_integration"]` in the API response and UI badge (`AWS S3: <bucket>`).
+It generates 24-hour pre-signed S3 URLs (`hud_s3_url`, `clahe_s3_url`), attaches `opencv_telemetry["aws_s3"]`, and renders the **`AWS S3 Cloud Synced (<bucket>)`** pill badge in the OpenCV 5.0 Agentic Telemetry card.
 
-### Component B: Launching on AWS EC2 Graviton2 (`arm64`) with Automatic Cloudflared HTTPS Tunnel
+### Component B: Serverless AWS Lambda (`arm64` Graviton) via `Mangum`
+`prometheus/api/app.py` exposes `handler = Mangum(app, lifespan="auto")`, allowing the exact same FastAPI + OpenCV 5.0 container to run on **AWS Lambda (Arm64 Graviton2)** with a built-in HTTPS Function URL—bypassing EC2 vCPU limits completely.
+
+### Component C: Launching on AWS EC2 Graviton2 (`arm64`) with Automatic Cloudflared HTTPS Tunnel
 1. In the AWS Console, launch an **Ubuntu Server 24.04 LTS (HVM), SSD Volume Type — 64-bit (Arm)** instance (`t4g.small` or `t4g.micro`).
 2. SSH into the instance, clone the repository, and run the automated setup script (which launches both `orb-api` and a zero-cost `cloudflared` `https://*.trycloudflare.com` HTTPS tunnel sidecar):
 
@@ -128,16 +131,17 @@ chmod +x deploy/aws_graviton_setup.sh
 ./deploy/aws_graviton_setup.sh
 ```
 
-3. Add your `GEMINI_API_KEY` (and optional `ORB_AWS_S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) to `.env` and restart the container:
+3. Add your `GEMINI_API_KEY` (and `ORB_AWS_S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) to `.env` and restart the container:
 
 ```bash
 nano .env
 sudo docker compose -f docker-compose.aws.yml up -d
 ```
 
-### Component C: Point `orb-azure-ten.vercel.app` to the Backend
+### Component D: Point `orb-azure-ten.vercel.app` to the Backend
 1. Open **Vercel Dashboard $\rightarrow$ Project (`orb`) $\rightarrow$ Settings $\rightarrow$ Environment Variables**.
-2. Set **`VITE_API_BASE_URL`** to your HTTPS API origin (either your Render + AWS S3 backend or your AWS Graviton `https://*.trycloudflare.com` tunnel URL).
+2. Set **`VITE_API_BASE_URL`** to your HTTPS API origin (Render + AWS S3, AWS Lambda Function URL, or AWS Graviton `https://*.trycloudflare.com` tunnel URL).
 3. Share the zero-friction judge link in your competition submission form:
    **`https://orb-azure-ten.vercel.app/?judge=OPENCV2026`**
+
 

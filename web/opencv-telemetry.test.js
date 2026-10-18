@@ -53,6 +53,17 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
         clahe_applied: true,
         clahe_preview_url: "/api/jobs/job123/frames/opencv_clahe_enhanced.jpg",
         hud_preview_url: "/api/jobs/job123/frames/opencv_hud_overlay.jpg",
+        aws_s3: {
+          enabled: true,
+          bucket: "orb-opencv-2026-artifacts",
+          region: "us-east-1",
+          keys: [
+            "orb-jobs/job123/opencv_hud_overlay.jpg",
+            "orb-jobs/job123/opencv_clahe_enhanced.jpg",
+            "orb-jobs/job123/opencv_telemetry.json",
+          ],
+          hud_s3_url: "https://orb-opencv-2026-artifacts.s3.us-east-1.amazonaws.com/orb-jobs/job123/opencv_hud_overlay.jpg",
+        },
         color_and_lighting: {
           mean_luminance: 38.4,
           contrast_std: 24.1,
@@ -112,6 +123,7 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
       "Latency: 42.8 ms",
       "Throughput: 186.9 FPS",
       "CLAHE Auto-Recovery: Active",
+      "AWS S3 Cloud Synced (orb-opencv-2026-artifacts)",
     ]);
     expect(document.querySelector("#res-opencv-badges .opencv-badge.highlight")?.textContent).toBe(
       "CLAHE Auto-Recovery: Active",
@@ -167,16 +179,18 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
     expect(swatches[0].textContent).toContain("#141824");
     expect(swatches[0].textContent).toContain("42.5%");
 
-    // 5. CV Measurements Grid (Lighting, Composition, and Video Optical Flow)
+    // 5. CV Measurements Grid (Lighting, Composition, Video Optical Flow, and AWS S3)
     const metricTerms = [...document.querySelectorAll("#res-opencv-metrics dt")].map((n) => n.textContent);
     expect(metricTerms).toEqual([
       "Lighting & Exposure (cv2.calcHist / LAB)",
       "Composition & Focus (cv2.Laplacian / Canny / HoughLinesP)",
       "Optical Flow & Continuity (cv2.calcOpticalFlowFarneback / compareHist)",
+      "AWS Cloud Persistence (Amazon S3)",
     ]);
     const metricDetails = [...document.querySelectorAll("#res-opencv-metrics dd")].map((n) => n.textContent);
     expect(metricDetails[2]).toContain("pan-right");
     expect(metricDetails[2]).toContain("continuous-single-take");
+    expect(metricDetails[3]).toContain("s3://orb-opencv-2026-artifacts");
   });
 
   it("hides #res-opencv-card cleanly on text-only Enhance results", () => {

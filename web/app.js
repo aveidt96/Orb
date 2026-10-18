@@ -882,8 +882,10 @@ export function renderResult(result) {
 
   currentPreviewHasVideo = Boolean(video.preview_url);
   currentPreviewHasImage = Boolean(image.preview_url);
-  const hasHud = Boolean(cv?.hud_preview_url);
-  const hasClahe = Boolean(cv?.clahe_preview_url);
+  const hudUrl = cv?.hud_preview_url || cv?.aws_s3?.hud_s3_url || null;
+  const claheUrl = cv?.clahe_preview_url || cv?.aws_s3?.clahe_s3_url || null;
+  const hasHud = Boolean(hudUrl);
+  const hasClahe = Boolean(claheUrl);
   const hasAnyPreview = Boolean(media.preview_url || hasHud || hasClahe);
 
   els.resPreviewCard.classList.toggle("hidden", !hasAnyPreview);
@@ -896,13 +898,15 @@ export function renderResult(result) {
   else { els.resImage.removeAttribute("src"); els.resImage.classList.add("hidden"); }
 
   if (els.resHudImage) {
-    if (hasHud && creditMode !== "credits") els.resHudImage.src = apiUrl(cv.hud_preview_url);
-    else els.resHudImage.removeAttribute("src");
+    if (hasHud && (creditMode !== "credits" || /^https?:\/\//i.test(hudUrl))) {
+      els.resHudImage.src = /^https?:\/\//i.test(hudUrl) ? hudUrl : apiUrl(hudUrl);
+    } else els.resHudImage.removeAttribute("src");
     els.resHudImage.classList.add("hidden");
   }
   if (els.resClahePreviewImage) {
-    if (hasClahe && creditMode !== "credits") els.resClahePreviewImage.src = apiUrl(cv.clahe_preview_url);
-    else els.resClahePreviewImage.removeAttribute("src");
+    if (hasClahe && (creditMode !== "credits" || /^https?:\/\//i.test(claheUrl))) {
+      els.resClahePreviewImage.src = /^https?:\/\//i.test(claheUrl) ? claheUrl : apiUrl(claheUrl);
+    } else els.resClahePreviewImage.removeAttribute("src");
     els.resClahePreviewImage.classList.add("hidden");
   }
   if (els.resPreviewSwitcher) {
@@ -989,14 +993,16 @@ export function renderOpenCVTelemetry(cv) {
     els.resOpencvBadges.replaceChildren();
     const fps = cv.effective_fps ?? cv.motion_and_continuity?.effective_fps;
     const claheActive = Boolean(cv.clahe_applied || cv.clahe_triggered);
+    const awsS3 = cv.aws_s3 || null;
     const aws = cv.aws_integration || null;
+    const s3Bucket = (awsS3?.enabled && awsS3.bucket) || (aws?.enabled && aws.s3_bucket) || "";
     const versionLabel = `OpenCV ${cv.opencv_version || "5.0.0"}${cv.compute_badge ? ` · ${cv.compute_badge}` : ""}`;
     const badgeSpecs = [
       { text: versionLabel, highlight: false },
       cv.processing_ms !== undefined ? { text: `Latency: ${Number(cv.processing_ms).toFixed(1)} ms`, highlight: false } : null,
       fps !== undefined ? { text: `Throughput: ${Number(fps).toFixed(1)} FPS`, highlight: false } : null,
       claheActive ? { text: "CLAHE Auto-Recovery: Active", highlight: true } : null,
-      aws?.enabled && aws.s3_bucket ? { text: `AWS S3: ${aws.s3_bucket}`, highlight: true } : null,
+      s3Bucket ? { text: `AWS S3 Cloud Synced (${s3Bucket})`, highlight: true } : null,
     ].filter(Boolean);
     for (const spec of badgeSpecs) {
       const span = document.createElement("span");
@@ -1026,14 +1032,18 @@ export function renderOpenCVTelemetry(cv) {
     }
   }
 
+  const hudUrl = cv.hud_preview_url || cv.aws_s3?.hud_s3_url || null;
+  const claheUrl = cv.clahe_preview_url || cv.aws_s3?.clahe_s3_url || null;
+
   // 3a. OpenCV 5.0 Vision HUD Overlay Toggle
   if (els.resOpencvHudWrap && els.resOpencvHudImg && els.resOpencvHudView && els.resOpencvHudToggle) {
     els.resOpencvHudView.classList.add("hidden");
     els.resOpencvHudToggle.setAttribute("aria-expanded", "false");
     els.resOpencvHudToggle.textContent = "View OpenCV 5.0 Vision HUD Overlay";
-    if (cv.hud_preview_url) {
-      if (creditMode !== "credits") els.resOpencvHudImg.src = apiUrl(cv.hud_preview_url);
-      else els.resOpencvHudImg.removeAttribute("src");
+    if (hudUrl) {
+      if (creditMode !== "credits" || /^https?:\/\//i.test(hudUrl)) {
+        els.resOpencvHudImg.src = /^https?:\/\//i.test(hudUrl) ? hudUrl : apiUrl(hudUrl);
+      } else els.resOpencvHudImg.removeAttribute("src");
       els.resOpencvHudWrap.classList.remove("hidden");
     } else {
       els.resOpencvHudImg.removeAttribute("src");
@@ -1046,9 +1056,10 @@ export function renderOpenCVTelemetry(cv) {
     els.resOpencvClaheView.classList.add("hidden");
     els.resOpencvClaheToggle.setAttribute("aria-expanded", "false");
     els.resOpencvClaheToggle.textContent = "View OpenCV CLAHE Shadow Recovery";
-    if (cv.clahe_preview_url) {
-      if (creditMode !== "credits") els.resOpencvClaheImg.src = apiUrl(cv.clahe_preview_url);
-      else els.resOpencvClaheImg.removeAttribute("src");
+    if (claheUrl) {
+      if (creditMode !== "credits" || /^https?:\/\//i.test(claheUrl)) {
+        els.resOpencvClaheImg.src = /^https?:\/\//i.test(claheUrl) ? claheUrl : apiUrl(claheUrl);
+      } else els.resOpencvClaheImg.removeAttribute("src");
       els.resOpencvClaheWrap.classList.remove("hidden");
     } else {
       els.resOpencvClaheImg.removeAttribute("src");
@@ -1086,7 +1097,11 @@ export function renderOpenCVTelemetry(cv) {
     const cl = cv.color_and_lighting || {};
     const sg = cv.sharpness_and_geometry || {};
     const mc = cv.motion_and_continuity || {};
+    const awsS3 = cv.aws_s3 || null;
     const aws = cv.aws_integration || null;
+    const s3Bucket = (awsS3?.enabled && awsS3.bucket) || (aws?.enabled && aws.s3_bucket) || "";
+    const s3Region = awsS3?.region || aws?.s3_region || "us-east-1";
+    const s3Items = awsS3?.keys || aws?.artifacts_synced || [];
     const rows = [];
     if (cl.lighting_key !== undefined) {
       rows.push([
@@ -1110,10 +1125,10 @@ export function renderOpenCVTelemetry(cv) {
         `Motion: ${mc.dominant_motion} (dx=${mc.mean_dx}, dy=${mc.mean_dy}, radial=${mc.radial_flow}) · HSV continuity ${mc.mean_hist_correlation} (${mc.continuity_class})`,
       ]);
     }
-    if (aws?.enabled && aws.s3_bucket) {
+    if (s3Bucket) {
       rows.push([
         "AWS Cloud Persistence (Amazon S3)",
-        `Bucket: s3://${aws.s3_bucket} (${aws.s3_region || "us-east-1"}) · Synced: ${(aws.artifacts_synced || []).join(", ") || "ready"}`,
+        `Bucket: s3://${s3Bucket} (${s3Region}) · Synced: ${s3Items.join(", ") || "ready"}`,
       ]);
     }
     for (const [title, text] of rows) {

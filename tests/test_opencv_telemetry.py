@@ -191,9 +191,12 @@ def test_opencv_native_video_fallbacks_when_ffmpeg_missing(tmp_path: Path, monke
 
 def test_aws_s3_artifact_sync_and_telemetry_metadata(tmp_path: Path, monkeypatch):
     from unittest.mock import MagicMock
-    from prometheus.storage.aws_s3 import sync_opencv_artifacts_to_s3
+    from prometheus.api.app import handler
+    from prometheus.storage.aws_s3 import sync_job_artifacts_to_s3
 
     monkeypatch.setenv("ORB_AWS_S3_BUCKET", "orb-opencv-2026-artifacts")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setenv("ORB_COMPUTE_ENV", "AWS")
 
@@ -209,17 +212,27 @@ def test_aws_s3_artifact_sync_and_telemetry_metadata(tmp_path: Path, monkeypatch
     assert "AWS S3" in cv_dict["compute_badge"]
 
     fake_s3 = MagicMock()
-    aws_meta = sync_opencv_artifacts_to_s3("job999", run_dir, cv_dict, s3_client=fake_s3)
+    fake_s3.generate_presigned_url.side_effect = (
+        lambda op, Params, ExpiresIn: f"https://{Params['Bucket']}.s3.us-east-1.amazonaws.com/{Params['Key']}?expires={ExpiresIn}"
+    )
+    aws_s3 = sync_job_artifacts_to_s3("job999", run_dir, cv_dict, s3_client=fake_s3)
 
-    assert aws_meta["enabled"] is True
-    assert aws_meta["s3_bucket"] == "orb-opencv-2026-artifacts"
-    assert aws_meta["s3_region"] == "us-east-1"
-    assert "Amazon S3" in aws_meta["services"]
-    assert "AWS Graviton / Compute Ready" in aws_meta["services"]
-    assert set(aws_meta["artifacts_synced"]) == {
-        "opencv_hud_overlay.jpg",
-        "opencv_clahe_enhanced.jpg",
-        "opencv_telemetry.json",
+    assert aws_s3["enabled"] is True
+    assert aws_s3["bucket"] == "orb-opencv-2026-artifacts"
+    assert aws_s3["region"] == "us-east-1"
+    assert set(aws_s3["keys"]) == {
+        "orb-jobs/job999/opencv_hud_overlay.jpg",
+        "orb-jobs/job999/opencv_clahe_enhanced.jpg",
+        "orb-jobs/job999/opencv_telemetry.json",
     }
+    assert aws_s3["hud_s3_url"] == (
+        "https://orb-opencv-2026-artifacts.s3.us-east-1.amazonaws.com/orb-jobs/job999/opencv_hud_overlay.jpg?expires=86400"
+    )
+    assert aws_s3["clahe_s3_url"] == (
+        "https://orb-opencv-2026-artifacts.s3.us-east-1.amazonaws.com/orb-jobs/job999/opencv_clahe_enhanced.jpg?expires=86400"
+    )
+    assert cv_dict["aws_s3"] == aws_s3
     assert (run_dir / "opencv_telemetry.json").is_file()
     assert fake_s3.upload_file.call_count == 3
+    assert handler is not None
+

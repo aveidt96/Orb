@@ -2,12 +2,13 @@
 
 Reads `ORB_AWS_S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
 `AWS_REGION` (default `"us-east-1"`) from the environment. When configured,
-persists OpenCV 5.0 diagnostic artifacts (`opencv_hud_overlay.jpg`,
+uploads OpenCV 5.0 diagnostic artifacts (`opencv_hud_overlay.jpg`,
 `opencv_clahe_enhanced.jpg`, and `opencv_telemetry.json`) to:
-    s3://<ORB_AWS_S3_BUCKET>/jobs/<job_id>/<filename>
+    s3://<ORB_AWS_S3_BUCKET>/orb-jobs/<job_id>/<filename>
+and generates 24-hour pre-signed S3 URLs (`hud_s3_url`, `clahe_s3_url`).
 
-Designed to be fault-tolerant with short connection/read timeouts so S3 network
-hiccups or missing credentials never block or fail an Orb visual analysis job.
+Designed to be fault-tolerant with a 4-second timeout so S3 network hiccups or
+missing credentials never block or fail an Orb visual analysis job.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import hmac
 import json
 import logging
 import os
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,8 @@ _ARTIFACT_CONTENT_TYPES: dict[str, str] = {
     "opencv_clahe_enhanced.jpg": "image/jpeg",
     "opencv_telemetry.json": "application/json",
 }
+
+_PRESIGNED_EXPIRES_SECONDS = 86400  # 24 hours
 
 
 def get_aws_s3_config() -> dict[str, str]:
@@ -57,13 +61,19 @@ def get_aws_s3_config() -> dict[str, str]:
 def build_aws_integration_metadata(
     artifacts_synced: list[str] | None = None,
     job_id: str | None = None,
+    keys: list[str] | None = None,
+    hud_s3_url: str | None = None,
+    clahe_s3_url: str | None = None,
 ) -> dict[str, Any]:
     """Build the `aws_integration` telemetry dictionary reported in `opencv_telemetry`."""
     cfg = get_aws_s3_config()
     bucket = cfg["bucket"]
     region = cfg["region"]
     compute_env = os.environ.get("ORB_COMPUTE_ENV", "").strip().upper()
-    has_aws_exec = bool(os.environ.get("AWS_EXECUTION_ENV", "").strip())
+    has_aws_exec = bool(
+        os.environ.get("AWS_EXECUTION_ENV", "").strip()
+        or os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "").strip()
+    )
     s3_enabled = bool(bucket)
     aws_active = s3_enabled or compute_env == "AWS" or has_aws_exec
 
@@ -81,13 +91,19 @@ def build_aws_integration_metadata(
         "s3_region": region,
         "artifacts_synced": synced_list,
     }
+    if keys is not None:
+        payload["keys"] = list(keys)
+    if hud_s3_url:
+        payload["hud_s3_url"] = hud_s3_url
+    if clahe_s3_url:
+        payload["clahe_s3_url"] = clahe_s3_url
     if bucket and job_id:
-        payload["s3_prefix"] = f"s3://{bucket}/jobs/{job_id}/"
+        payload["s3_prefix"] = f"s3://{bucket}/orb-jobs/{job_id}/"
     return payload
 
 
 def _create_boto3_s3_client(cfg: dict[str, str]) -> Any:
-    """Create a boto3 S3 client with fast timeouts."""
+    """Create a boto3 S3 client with a 4-second timeout."""
     import boto3  # type: ignore[import-not-found]
 
     kwargs: dict[str, Any] = {"region_name": cfg["region"]}
@@ -101,9 +117,10 @@ def _create_boto3_s3_client(cfg: dict[str, str]) -> Any:
         from botocore.config import Config  # type: ignore[import-not-found]
 
         kwargs["config"] = Config(
-            connect_timeout=2,
-            read_timeout=3,
+            connect_timeout=4,
+            read_timeout=4,
             retries={"max_attempts": 1},
+            signature_version="s3v4",
         )
     except Exception:
         pass
@@ -115,12 +132,70 @@ def _sigv4_sign(key: bytes, msg: str) -> bytes:
     return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
 
 
+def _presign_s3_sigv4_fallback(
+    cfg: dict[str, str],
+    key: str,
+    expires_in: int = _PRESIGNED_EXPIRES_SECONDS,
+) -> str | None:
+    """Generate a SigV4 pre-signed GET URL when boto3 is not used."""
+    bucket = cfg["bucket"]
+    region = cfg["region"]
+    access_key = cfg["access_key"]
+    secret_key = cfg["secret_key"]
+    if not (bucket and access_key and secret_key):
+        return None
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+    host = f"{bucket}.s3.{region}.amazonaws.com"
+    canonical_uri = "/" + key.lstrip("/")
+    credential_scope = f"{datestamp}/{region}/s3/aws4_request"
+
+    query_params: dict[str, str] = {
+        "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+        "X-Amz-Credential": f"{access_key}/{credential_scope}",
+        "X-Amz-Date": amz_date,
+        "X-Amz-Expires": str(expires_in),
+        "X-Amz-SignedHeaders": "host",
+    }
+    if cfg["session_token"]:
+        query_params["X-Amz-Security-Token"] = cfg["session_token"]
+
+    sorted_qp = sorted(query_params.items())
+    canonical_querystring = "&".join(
+        f"{urllib.parse.quote(k, safe='')}={urllib.parse.quote(v, safe='')}"
+        for k, v in sorted_qp
+    )
+    canonical_headers = f"host:{host}\n"
+    canonical_request = "\n".join([
+        "GET",
+        canonical_uri,
+        canonical_querystring,
+        canonical_headers,
+        "host",
+        "UNSIGNED-PAYLOAD",
+    ])
+    string_to_sign = "\n".join([
+        "AWS4-HMAC-SHA256",
+        amz_date,
+        credential_scope,
+        hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+    ])
+    k_date = _sigv4_sign(("AWS4" + secret_key).encode("utf-8"), datestamp)
+    k_region = _sigv4_sign(k_date, region)
+    k_service = _sigv4_sign(k_region, "s3")
+    k_signing = _sigv4_sign(k_service, "aws4_request")
+    signature = hmac.new(k_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"https://{host}{canonical_uri}?{canonical_querystring}&X-Amz-Signature={signature}"
+
+
 def _put_s3_sigv4_fallback(
     cfg: dict[str, str],
     key: str,
     body: bytes,
     content_type: str,
-    timeout: float = 3.0,
+    timeout: float = 4.0,
 ) -> None:
     """Zero-dependency AWS Signature Version 4 PUT fallback if boto3 is not installed."""
     bucket = cfg["bucket"]
@@ -189,35 +264,69 @@ def _put_s3_sigv4_fallback(
             raise RuntimeError(f"S3 PUT returned HTTP {resp.status}")
 
 
-def sync_opencv_artifacts_to_s3(
+def _generate_presigned_get_url(
+    client: Any | None,
+    cfg: dict[str, str],
+    bucket: str,
+    key: str,
+) -> str | None:
+    if client is not None and hasattr(client, "generate_presigned_url"):
+        try:
+            return str(
+                client.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": bucket, "Key": key},
+                    ExpiresIn=_PRESIGNED_EXPIRES_SECONDS,
+                )
+            )
+        except Exception as exc:
+            _LOG.debug("Could not generate boto3 presigned URL for %s: %s", key, exc)
+    return _presign_s3_sigv4_fallback(cfg, key)
+
+
+def sync_job_artifacts_to_s3(
     job_id: str,
     run_dir: Path | str,
-    cv_telemetry: dict[str, Any],
+    telemetry: dict[str, Any],
     s3_client: Any | None = None,
 ) -> dict[str, Any]:
-    """Write `opencv_telemetry.json` and upload OpenCV artifacts to Amazon S3 if configured.
+    """Upload OpenCV 5.0 job artifacts to `s3://<bucket>/orb-jobs/<job_id>/` and generate 24h pre-signed URLs.
 
-    Always populates and returns the `aws_integration` metadata dict and attaches
-    it to `cv_telemetry["aws_integration"]`.
+    Attaches `telemetry["aws_s3"]` and `telemetry["aws_integration"]` in-place
+    and returns `telemetry["aws_s3"]`.
     """
     target_dir = Path(run_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     cfg = get_aws_s3_config()
     bucket = cfg["bucket"]
+    region = cfg["region"]
+    has_creds = bool(
+        s3_client is not None
+        or (cfg["access_key"] and cfg["secret_key"])
+        or os.environ.get("AWS_EXECUTION_ENV", "").strip()
+        or os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "").strip()
+    )
 
-    # Always write opencv_telemetry.json into run_dir so it is available locally and for S3 sync
+    # Always write opencv_telemetry.json into run_dir first
     telemetry_file = target_dir / "opencv_telemetry.json"
     try:
-        snapshot = dict(cv_telemetry)
-        snapshot["aws_integration"] = build_aws_integration_metadata([], job_id=job_id)
+        snapshot = dict(telemetry)
         telemetry_file.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
     except Exception as exc:
-        _LOG.debug("Could not write local opencv_telemetry.json: %s", exc)
+        _LOG.debug("Could not write initial local opencv_telemetry.json: %s", exc)
 
-    if not bucket:
-        meta = build_aws_integration_metadata([], job_id=job_id)
-        cv_telemetry["aws_integration"] = meta
-        return meta
+    if not (bucket and has_creds):
+        aws_s3_meta: dict[str, Any] = {
+            "enabled": False,
+            "bucket": bucket,
+            "region": region,
+            "keys": [],
+            "hud_s3_url": None,
+            "clahe_s3_url": None,
+        }
+        telemetry["aws_s3"] = aws_s3_meta
+        telemetry["aws_integration"] = build_aws_integration_metadata([], job_id=job_id)
+        return aws_s3_meta
 
     candidate_names = [
         "opencv_hud_overlay.jpg",
@@ -231,6 +340,10 @@ def sync_opencv_artifacts_to_s3(
     ]
 
     artifacts_synced: list[str] = []
+    uploaded_keys: list[str] = []
+    hud_s3_url: str | None = None
+    clahe_s3_url: str | None = None
+
     client = s3_client
     if client is None:
         try:
@@ -239,7 +352,7 @@ def sync_opencv_artifacts_to_s3(
             client = None
 
     for name, path in existing_files:
-        s3_key = f"jobs/{job_id}/{name}"
+        s3_key = f"orb-jobs/{job_id}/{name}"
         content_type = _ARTIFACT_CONTENT_TYPES.get(name, "application/octet-stream")
         try:
             if client is not None:
@@ -260,13 +373,43 @@ def sync_opencv_artifacts_to_s3(
             else:
                 _put_s3_sigv4_fallback(cfg, s3_key, path.read_bytes(), content_type)
             artifacts_synced.append(name)
+            uploaded_keys.append(s3_key)
+            if name == "opencv_hud_overlay.jpg":
+                hud_s3_url = _generate_presigned_get_url(client, cfg, bucket, s3_key)
+            elif name == "opencv_clahe_enhanced.jpg":
+                clahe_s3_url = _generate_presigned_get_url(client, cfg, bucket, s3_key)
         except Exception as exc:
             _LOG.warning("AWS S3 artifact sync skipped for %s: %s", s3_key, exc)
 
-    meta = build_aws_integration_metadata(artifacts_synced, job_id=job_id)
-    cv_telemetry["aws_integration"] = meta
+    aws_s3_meta = {
+        "enabled": bool(uploaded_keys),
+        "bucket": bucket,
+        "region": region,
+        "keys": uploaded_keys,
+        "hud_s3_url": hud_s3_url,
+        "clahe_s3_url": clahe_s3_url,
+    }
+    telemetry["aws_s3"] = aws_s3_meta
+    telemetry["aws_integration"] = build_aws_integration_metadata(
+        artifacts_synced,
+        job_id=job_id,
+        keys=uploaded_keys,
+        hud_s3_url=hud_s3_url,
+        clahe_s3_url=clahe_s3_url,
+    )
     try:
-        telemetry_file.write_text(json.dumps(cv_telemetry, indent=2), encoding="utf-8")
+        telemetry_file.write_text(json.dumps(telemetry, indent=2), encoding="utf-8")
     except Exception:
         pass
-    return meta
+    return aws_s3_meta
+
+
+def sync_opencv_artifacts_to_s3(
+    job_id: str,
+    run_dir: Path | str,
+    cv_telemetry: dict[str, Any],
+    s3_client: Any | None = None,
+) -> dict[str, Any]:
+    """Alias wrapper around `sync_job_artifacts_to_s3` returning `aws_integration`."""
+    sync_job_artifacts_to_s3(job_id, run_dir, cv_telemetry, s3_client=s3_client)
+    return cv_telemetry["aws_integration"]

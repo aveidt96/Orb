@@ -1754,7 +1754,22 @@ a temporary process-only model override described below.
 
 ## 2026-10-18 — First-Class Amazon S3 (AWS) OpenCV 5.0 Artifact Persistence (`prometheus/storage/aws_s3.py`)
 
-- Added `boto3>=1.35.0` to `requirements.txt` and created `prometheus/storage/aws_s3.py` (`get_aws_s3_config`, `build_aws_integration_metadata`, `sync_opencv_artifacts_to_s3`) with both `boto3` S3 client support (2s connect / 3s read timeout) and a zero-dependency AWS Signature Version 4 (`SigV4`) HTTP PUT fallback.
-- When `ORB_AWS_S3_BUCKET` and AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) are configured, `_run_orb_visual_job()` in `prometheus/api/app.py` automatically writes `opencv_telemetry.json` and syncs `opencv_hud_overlay.jpg`, `opencv_clahe_enhanced.jpg`, and `opencv_telemetry.json` to `s3://<ORB_AWS_S3_BUCKET>/jobs/<job_id>/...`, populating `opencv_telemetry["aws_integration"]` (`enabled`, `services`, `s3_bucket`, `s3_region`, `artifacts_synced`).
-- Updated `detect_compute_runtime()` in `prometheus/analysis/opencv_telemetry.py` and `renderOpenCVTelemetry()` in `web/app.js` to surface `AWS S3` in `compute_badge`, `#res-opencv-badges`, and `#res-opencv-metrics`.
-- Added `test_aws_s3_artifact_sync_and_telemetry_metadata` in `tests/test_opencv_telemetry.py`, updated `SUBMISSION_GUIDE.md`, rebuilt `web_dist/` (`npm run build`), and committed on `main`.
+- Added `boto3>=1.35.0` to `requirements.txt` and created `prometheus/storage/aws_s3.py` (`get_aws_s3_config`, `build_aws_integration_metadata`, `sync_opencv_artifacts_to_s3`) with both `boto3` S3 client support and a zero-dependency AWS Signature Version 4 (`SigV4`) HTTP PUT fallback.
+
+## 2026-10-19 — Amazon S3 Pre-Signed URL Sync (`sync_job_artifacts_to_s3`) & Serverless AWS Lambda (`Mangum`) Arm64 Adapter
+
+- **Packaging & Dependencies (`pyproject.toml`, `requirements.txt`):**
+  - Created `pyproject.toml` and updated `requirements.txt` with `boto3>=1.35.0` and `mangum>=0.19.0`, and installed both into `.venv`.
+- **Amazon S3 Artifact Sync & 24-Hour Pre-Signed URLs (`prometheus/storage/aws_s3.py`, `prometheus/api/app.py`):**
+  - Implemented `sync_job_artifacts_to_s3(job_id, run_dir, telemetry, s3_client=None)` in `prometheus/storage/aws_s3.py`:
+    - Reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` (default `"us-east-1"`), and `ORB_AWS_S3_BUCKET` from environment variables.
+    - Uploads `opencv_hud_overlay.jpg`, `opencv_clahe_enhanced.jpg` (if present), and `opencv_telemetry.json` to `s3://<ORB_AWS_S3_BUCKET>/orb-jobs/<job_id>/` using `boto3.client("s3")` with a 4-second timeout (`connect_timeout=4, read_timeout=4`).
+    - Generates 24-hour (`ExpiresIn=86400`) pre-signed S3 URLs (`generate_presigned_url("get_object", ...)`) for the HUD (`hud_s3_url`) and CLAHE (`clahe_s3_url`) images.
+    - Populates `telemetry["aws_s3"] = {"enabled": True, "bucket": bucket, "region": region, "keys": [...], "hud_s3_url": ..., "clahe_s3_url": ...}` and calls `sync_job_artifacts_to_s3()` at the end of `_run_orb_visual_job()` in `prometheus/api/app.py`.
+- **Frontend Badge (`web/app.js`):**
+  - Updated `renderOpenCVTelemetry()` in `web/app.js` to display the **`AWS S3 Cloud Synced (<bucket>)`** highlight pill badge inside `#res-opencv-badges` and fall back to `aws_s3.hud_s3_url` / `aws_s3.clahe_s3_url` when local frame URLs are omitted in stateless `public_mode`.
+- **Serverless AWS Lambda Arm64 Handler (`prometheus/api/app.py`):**
+  - Exposed `handler = Mangum(app, lifespan="auto")` in `prometheus/api/app.py` so the FastAPI + OpenCV 5.0 container can also run directly on AWS Lambda (Arm64 Graviton) with a Function URL.
+- **Verification:**
+  - Updated `tests/test_opencv_telemetry.py` and `web/opencv-telemetry.test.js`, ran `pytest` and `vitest`, rebuilt `web_dist/` (`npm run build`), committed, and pushed to `origin main`.
+

@@ -846,9 +846,9 @@ def create_app(
             cv_meta = payload.get("opencv_telemetry")
             if isinstance(cv_meta, dict):
                 try:
-                    from prometheus.storage.aws_s3 import sync_opencv_artifacts_to_s3
+                    from prometheus.storage.aws_s3 import sync_job_artifacts_to_s3
 
-                    sync_opencv_artifacts_to_s3(job.id, run_dir, cv_meta)
+                    sync_job_artifacts_to_s3(job.id, run_dir, cv_meta)
                 except Exception as exc:
                     _LOG.warning("AWS S3 telemetry sync skipped: %s", exc)
             if not public_mode:
@@ -860,7 +860,8 @@ def create_app(
                     if cv_meta.get("hud_artifact") or (run_dir / "opencv_hud_overlay.jpg").is_file():
                         cv_meta["hud_preview_url"] = f"/api/jobs/{job.id}/frames/opencv_hud_overlay.jpg"
             else:
-                # Production retains prompt/analysis JSON in Postgres, not media.
+                # Production retains prompt/analysis JSON in Postgres, not local media;
+                # if Amazon S3 synced the HUD/CLAHE artifacts, serve their 24h pre-signed S3 URLs.
                 if "video" in payload:
                     payload["video"].pop("preview_url", None)
                     payload["scenes"] = [
@@ -871,9 +872,16 @@ def create_app(
                     ]
                 if "image" in payload:
                     payload["image"].pop("preview_url", None)
-                if isinstance(payload.get("opencv_telemetry"), dict):
-                    payload["opencv_telemetry"].pop("clahe_preview_url", None)
-                    payload["opencv_telemetry"].pop("hud_preview_url", None)
+                if isinstance(cv_meta, dict):
+                    aws_s3 = cv_meta.get("aws_s3") if isinstance(cv_meta.get("aws_s3"), dict) else {}
+                    if aws_s3.get("clahe_s3_url"):
+                        cv_meta["clahe_preview_url"] = aws_s3["clahe_s3_url"]
+                    else:
+                        cv_meta.pop("clahe_preview_url", None)
+                    if aws_s3.get("hud_s3_url"):
+                        cv_meta["hud_preview_url"] = aws_s3["hud_s3_url"]
+                    else:
+                        cv_meta.pop("hud_preview_url", None)
             payload.update({"job_id": job.id, "operation": operation,
                             "notice": "The exact original creator prompt cannot be guaranteed." if operation == "decode" else
                             "A new prompt inspired by the reference, not its original instructions.",
@@ -1192,3 +1200,10 @@ def create_app(
 
 
 app = create_app()
+
+try:
+    from mangum import Mangum  # type: ignore[import-not-found]
+
+    handler = Mangum(app, lifespan="auto")
+except ImportError:  # pragma: no cover - fallback when mangum is not installed
+    handler = None  # type: ignore[assignment]
