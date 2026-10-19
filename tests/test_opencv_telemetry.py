@@ -218,6 +218,7 @@ def test_aws_s3_artifact_sync_and_telemetry_metadata(tmp_path: Path, monkeypatch
     aws_s3 = sync_job_artifacts_to_s3("job999", run_dir, cv_dict, s3_client=fake_s3)
 
     assert aws_s3["enabled"] is True
+    assert aws_s3["synced"] is True
     assert aws_s3["bucket"] == "orb-opencv-2026-artifacts"
     assert aws_s3["region"] == "us-east-1"
     assert set(aws_s3["keys"]) == {

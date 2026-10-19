@@ -1,11 +1,13 @@
 """Amazon S3 (AWS) Telemetry & Diagnostic Artifact Persistence for Orb.
 
 Reads `ORB_AWS_S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
-`AWS_REGION` (default `"us-east-1"`) from the environment. When configured,
-uploads OpenCV 5.0 diagnostic artifacts (`opencv_hud_overlay.jpg`,
-`opencv_clahe_enhanced.jpg`, and `opencv_telemetry.json`) to:
+`AWS_REGION` (default `"us-east-1"`) from the environment (or `.env` in the
+repository root). When configured, uploads OpenCV 5.0 diagnostic artifacts
+(`opencv_hud_overlay.jpg`, `opencv_clahe_enhanced.jpg`, and
+`opencv_telemetry.json`) to:
     s3://<ORB_AWS_S3_BUCKET>/orb-jobs/<job_id>/<filename>
-and generates 24-hour pre-signed S3 URLs (`hud_s3_url`, `clahe_s3_url`).
+auto-creating the bucket if it does not yet exist, and generates 24-hour
+pre-signed S3 URLs (`hud_s3_url`, `clahe_s3_url`).
 
 Designed to be fault-tolerant with a 4-second timeout so S3 network hiccups or
 missing credentials never block or fail an Orb visual analysis job.
@@ -25,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 _LOG = logging.getLogger(__name__)
+_ROOT_DIR = Path(__file__).resolve().parents[2]
 
 _ARTIFACT_CONTENT_TYPES: dict[str, str] = {
     "opencv_hud_overlay.jpg": "image/jpeg",
@@ -33,10 +36,43 @@ _ARTIFACT_CONTENT_TYPES: dict[str, str] = {
 }
 
 _PRESIGNED_EXPIRES_SECONDS = 86400  # 24 hours
+_VERIFIED_BUCKETS: set[str] = set()
+
+
+def load_dotenv_aws_vars(dotenv_path: Path | None = None) -> None:
+    """Load AWS / S3 variables from `.env` in repo root without overwriting set env vars."""
+    if "PYTEST_CURRENT_TEST" in os.environ and dotenv_path is None:
+        return
+    env_file = dotenv_path or (_ROOT_DIR / ".env")
+    if not env_file.is_file():
+        return
+    aws_keys = {
+        "ORB_AWS_S3_BUCKET",
+        "AWS_S3_BUCKET",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "ORB_COMPUTE_ENV",
+    }
+    try:
+        for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key in aws_keys and val and not os.environ.get(key):
+                os.environ[key] = val
+    except OSError:
+        pass
 
 
 def get_aws_s3_config() -> dict[str, str]:
     """Return normalized AWS S3 configuration from environment variables."""
+    load_dotenv_aws_vars()
     bucket = (
         os.environ.get("ORB_AWS_S3_BUCKET", "").strip()
         or os.environ.get("AWS_S3_BUCKET", "").strip()
@@ -86,6 +122,7 @@ def build_aws_integration_metadata(
     synced_list = list(artifacts_synced or [])
     payload: dict[str, Any] = {
         "enabled": aws_active,
+        "synced": bool(synced_list),
         "services": services,
         "s3_bucket": bucket,
         "s3_region": region,
@@ -126,6 +163,27 @@ def _create_boto3_s3_client(cfg: dict[str, str]) -> Any:
         pass
 
     return boto3.client("s3", **kwargs)
+
+
+def _ensure_bucket_exists(client: Any, bucket: str, region: str) -> None:
+    """Attempt to create the S3 bucket if it does not exist yet."""
+    if not client or bucket in _VERIFIED_BUCKETS or not hasattr(client, "create_bucket"):
+        return
+    try:
+        if region == "us-east-1":
+            client.create_bucket(Bucket=bucket)
+        else:
+            client.create_bucket(
+                Bucket=bucket,
+                CreateBucketConfiguration={"LocationConstraint": region},
+            )
+        _VERIFIED_BUCKETS.add(bucket)
+    except Exception as exc:
+        err_text = str(exc)
+        if "BucketAlreadyOwnedByYou" in err_text or "BucketAlreadyExists" in err_text:
+            _VERIFIED_BUCKETS.add(bucket)
+        else:
+            _LOG.debug("create_bucket(%s) returned: %s", bucket, exc)
 
 
 def _sigv4_sign(key: bytes, msg: str) -> bytes:
@@ -284,6 +342,33 @@ def _generate_presigned_get_url(
     return _presign_s3_sigv4_fallback(cfg, key)
 
 
+def _upload_single_object(
+    client: Any | None,
+    cfg: dict[str, str],
+    bucket: str,
+    s3_key: str,
+    path: Path,
+    content_type: str,
+) -> None:
+    if client is not None:
+        if hasattr(client, "upload_file"):
+            client.upload_file(
+                str(path),
+                bucket,
+                s3_key,
+                ExtraArgs={"ContentType": content_type},
+            )
+        else:
+            client.put_object(
+                Bucket=bucket,
+                Key=s3_key,
+                Body=path.read_bytes(),
+                ContentType=content_type,
+            )
+    else:
+        _put_s3_sigv4_fallback(cfg, s3_key, path.read_bytes(), content_type)
+
+
 def sync_job_artifacts_to_s3(
     job_id: str,
     run_dir: Path | str,
@@ -318,6 +403,7 @@ def sync_job_artifacts_to_s3(
     if not (bucket and has_creds):
         aws_s3_meta: dict[str, Any] = {
             "enabled": False,
+            "synced": False,
             "bucket": bucket,
             "region": region,
             "keys": [],
@@ -343,6 +429,7 @@ def sync_job_artifacts_to_s3(
     uploaded_keys: list[str] = []
     hud_s3_url: str | None = None
     clahe_s3_url: str | None = None
+    last_error: str | None = None
 
     client = s3_client
     if client is None:
@@ -355,23 +442,15 @@ def sync_job_artifacts_to_s3(
         s3_key = f"orb-jobs/{job_id}/{name}"
         content_type = _ARTIFACT_CONTENT_TYPES.get(name, "application/octet-stream")
         try:
-            if client is not None:
-                if hasattr(client, "upload_file"):
-                    client.upload_file(
-                        str(path),
-                        bucket,
-                        s3_key,
-                        ExtraArgs={"ContentType": content_type},
-                    )
+            try:
+                _upload_single_object(client, cfg, bucket, s3_key, path, content_type)
+            except Exception as first_exc:
+                if "NoSuchBucket" in str(first_exc) or "404" in str(first_exc):
+                    _ensure_bucket_exists(client, bucket, region)
+                    _upload_single_object(client, cfg, bucket, s3_key, path, content_type)
                 else:
-                    client.put_object(
-                        Bucket=bucket,
-                        Key=s3_key,
-                        Body=path.read_bytes(),
-                        ContentType=content_type,
-                    )
-            else:
-                _put_s3_sigv4_fallback(cfg, s3_key, path.read_bytes(), content_type)
+                    raise
+            _VERIFIED_BUCKETS.add(bucket)
             artifacts_synced.append(name)
             uploaded_keys.append(s3_key)
             if name == "opencv_hud_overlay.jpg":
@@ -379,16 +458,21 @@ def sync_job_artifacts_to_s3(
             elif name == "opencv_clahe_enhanced.jpg":
                 clahe_s3_url = _generate_presigned_get_url(client, cfg, bucket, s3_key)
         except Exception as exc:
+            last_error = str(exc)
             _LOG.warning("AWS S3 artifact sync skipped for %s: %s", s3_key, exc)
 
+    synced_ok = bool(uploaded_keys)
     aws_s3_meta = {
-        "enabled": bool(uploaded_keys),
+        "enabled": True,
+        "synced": synced_ok,
         "bucket": bucket,
         "region": region,
         "keys": uploaded_keys,
         "hud_s3_url": hud_s3_url,
         "clahe_s3_url": clahe_s3_url,
     }
+    if last_error and not synced_ok:
+        aws_s3_meta["error"] = last_error
     telemetry["aws_s3"] = aws_s3_meta
     telemetry["aws_integration"] = build_aws_integration_metadata(
         artifacts_synced,

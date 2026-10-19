@@ -55,6 +55,7 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
         hud_preview_url: "/api/jobs/job123/frames/opencv_hud_overlay.jpg",
         aws_s3: {
           enabled: true,
+          synced: true,
           bucket: "orb-opencv-2026-artifacts",
           region: "us-east-1",
           keys: [
@@ -123,7 +124,7 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
       "Latency: 42.8 ms",
       "Throughput: 186.9 FPS",
       "CLAHE Auto-Recovery: Active",
-      "AWS S3 Cloud Synced (orb-opencv-2026-artifacts)",
+      "AWS S3 Synced (orb-opencv-2026-artifacts)",
     ]);
     expect(document.querySelector("#res-opencv-badges .opencv-badge.highlight")?.textContent).toBe(
       "CLAHE Auto-Recovery: Active",

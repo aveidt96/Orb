@@ -995,14 +995,15 @@ export function renderOpenCVTelemetry(cv) {
     const claheActive = Boolean(cv.clahe_applied || cv.clahe_triggered);
     const awsS3 = cv.aws_s3 || null;
     const aws = cv.aws_integration || null;
-    const s3Bucket = (awsS3?.enabled && awsS3.bucket) || (aws?.enabled && aws.s3_bucket) || "";
+    const s3Synced = Boolean(awsS3?.synced ?? awsS3?.enabled ?? aws?.synced ?? aws?.enabled);
+    const s3Bucket = (s3Synced && (awsS3?.bucket || aws?.s3_bucket)) || "";
     const versionLabel = `OpenCV ${cv.opencv_version || "5.0.0"}${cv.compute_badge ? ` · ${cv.compute_badge}` : ""}`;
     const badgeSpecs = [
       { text: versionLabel, highlight: false },
       cv.processing_ms !== undefined ? { text: `Latency: ${Number(cv.processing_ms).toFixed(1)} ms`, highlight: false } : null,
       fps !== undefined ? { text: `Throughput: ${Number(fps).toFixed(1)} FPS`, highlight: false } : null,
       claheActive ? { text: "CLAHE Auto-Recovery: Active", highlight: true } : null,
-      s3Bucket ? { text: `AWS S3 Cloud Synced (${s3Bucket})`, highlight: true } : null,
+      s3Bucket ? { text: `AWS S3 Synced (${s3Bucket})`, highlight: true } : null,
     ].filter(Boolean);
     for (const spec of badgeSpecs) {
       const span = document.createElement("span");

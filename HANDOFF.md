@@ -1767,9 +1767,11 @@ a temporary process-only model override described below.
     - Generates 24-hour (`ExpiresIn=86400`) pre-signed S3 URLs (`generate_presigned_url("get_object", ...)`) for the HUD (`hud_s3_url`) and CLAHE (`clahe_s3_url`) images.
     - Populates `telemetry["aws_s3"] = {"enabled": True, "bucket": bucket, "region": region, "keys": [...], "hud_s3_url": ..., "clahe_s3_url": ...}` and calls `sync_job_artifacts_to_s3()` at the end of `_run_orb_visual_job()` in `prometheus/api/app.py`.
 - **Frontend Badge (`web/app.js`):**
-  - Updated `renderOpenCVTelemetry()` in `web/app.js` to display the **`AWS S3 Cloud Synced (<bucket>)`** highlight pill badge inside `#res-opencv-badges` and fall back to `aws_s3.hud_s3_url` / `aws_s3.clahe_s3_url` when local frame URLs are omitted in stateless `public_mode`.
+  - Updated `renderOpenCVTelemetry()` in `web/app.js` to display the **`AWS S3 Synced (<bucket>)`** highlight pill badge inside `#res-opencv-badges` when `telemetry.aws_s3?.synced` is true and fall back to `aws_s3.hud_s3_url` / `aws_s3.clahe_s3_url` when local frame URLs are omitted in stateless `public_mode`.
 - **Serverless AWS Lambda Arm64 Handler (`prometheus/api/app.py`):**
   - Exposed `handler = Mangum(app, lifespan="auto")` in `prometheus/api/app.py` so the FastAPI + OpenCV 5.0 container can also run directly on AWS Lambda (Arm64 Graviton) with a Function URL.
-- **Verification:**
-  - Updated `tests/test_opencv_telemetry.py` and `web/opencv-telemetry.test.js`, ran `pytest` and `vitest`, rebuilt `web_dist/` (`npm run build`), committed, and pushed to `origin main`.
+- **Live Amazon S3 Verification & Test Suites:**
+  - Verified live upload from `.env` (`ORB_AWS_S3_BUCKET=orb-opencv5-vision-2026`, `AWS_REGION=us-east-1`) via `analyze_image_cv()` + `sync_job_artifacts_to_s3()`: uploaded `orb-jobs/live-smoke-verify/opencv_hud_overlay.jpg`, `orb-jobs/live-smoke-verify/opencv_clahe_enhanced.jpg`, and `orb-jobs/live-smoke-verify/opencv_telemetry.json` (`synced: True`) and verified HTTP `200 OK` (`39,805 bytes`) when fetching the 24-hour pre-signed `hud_s3_url`.
+  - `pytest tests/test_opencv_telemetry.py -q` (`5 passed`), `npx vitest run web/opencv-telemetry.test.js` (`2 passed`), rebuilt `web_dist/` (`npm run build`), restarted the local FastAPI server on `http://127.0.0.1:8000`, and committed to `main`.
+
 
