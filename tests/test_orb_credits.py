@@ -409,3 +409,66 @@ def test_judge_demo_session_and_rate_limits(tmp_path, monkeypatch):
         assert bal["consumed"] == 1
         assert bal["judge_demo"] is True
 
+
+
+def test_multi_origin_trust_preview_and_same_host(tmp_path):
+    receiver = Account.create().address
+    config = CreditConfig(
+        database=tmp_path / "multi.sqlite3",
+        public_origin="https://orb-azure-ten.vercel.app,https://abc123.lambda-url.us-east-1.on.aws",
+        rpc_url="https://rpc.example.invalid", receiver=receiver, enabled=True,
+    )
+    service = CreditService(config, FakeRpc())
+    wallet = Account.create()
+    for origin in ("https://orb-azure-ten.vercel.app", "https://abc123.lambda-url.us-east-1.on.aws",
+                   "https://orb-azure-ten-git-feature-x.vercel.app", "http://127.0.0.1:8000",
+                   "http://localhost:8000"):
+        assert service.is_trusted_origin(origin), origin
+        assert service.challenge(wallet.address, origin)["message"]
+    # Same-origin page served by the API host itself (any Function URL host the request arrived on).
+    other_lambda = "https://zzz999.lambda-url.us-east-1.on.aws"
+    assert not service.is_trusted_origin(other_lambda)
+    assert service.is_trusted_origin(other_lambda, ("zzz999.lambda-url.us-east-1.on.aws",))
+    for evil in ("https://evil.vercel.app", "https://evil.example", "http://orb-azure-ten.vercel.app",
+                 "https://zzz999.lambda-url.us-east-1.on.aws.evil.example"):
+        assert not service.is_trusted_origin(evil, ("zzz999.lambda-url.us-east-1.on.aws",)), evil
+        with pytest.raises(CreditError, match="origin"):
+            service.challenge(wallet.address, evil)
+
+
+def test_stateless_challenge_and_session_work_across_lambda_containers(tmp_path, monkeypatch):
+    monkeypatch.setenv("ORB_SERVERLESS_SYNC", "1")
+    receiver = Account.create().address
+
+    def container(name):
+        return CreditService(CreditConfig(
+            database=tmp_path / f"{name}.sqlite3", public_origin="https://orb-azure-ten.vercel.app",
+            rpc_url="https://rpc.example.invalid", receiver=receiver, enabled=True,
+            session_secret="test-only-shared-secret-value",
+        ), FakeRpc())
+
+    a, b, c = container("a"), container("b"), container("c")
+    wallet = Account.create()
+    origin = "https://orb-azure-ten.vercel.app"
+    challenge = a.challenge(wallet.address, origin)
+    assert challenge["nonce"].startswith("sc.")
+    signature = Account.sign_message(encode_defunct(text=challenge["message"]), wallet.key).signature.hex()
+    session = b.sign_in(challenge["nonce"], signature, origin)  # different container
+    assert session["token"].startswith("ws_")
+    assert c.authenticate("Bearer " + session["token"]) == wallet.address.lower()  # third container
+    with pytest.raises(CreditError, match="already used"):
+        b.sign_in(challenge["nonce"], signature, origin)
+    # Tampered nonce / token and foreign secrets are rejected.
+    with pytest.raises(CreditError):
+        c.sign_in(challenge["nonce"][:-2] + "00", signature, origin)
+    with pytest.raises(CreditError):
+        c.authenticate("Bearer " + session["token"][:-2] + "00")
+    forged = CreditService(CreditConfig(
+        database=tmp_path / "forged.sqlite3", public_origin=origin, rpc_url="https://rpc.example.invalid",
+        receiver=receiver, enabled=True, session_secret="attacker-secret-value-0000000",
+    ), FakeRpc())
+    forged_challenge = forged.challenge(wallet.address, origin)
+    forged_sig = Account.sign_message(encode_defunct(text=forged_challenge["message"]), wallet.key).signature.hex()
+    forged_token = forged.sign_in(forged_challenge["nonce"], forged_sig, origin)["token"]
+    with pytest.raises(CreditError, match="expired"):
+        c.authenticate("Bearer " + forged_token)

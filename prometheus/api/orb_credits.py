@@ -8,6 +8,7 @@ No signing key or payment secret is held by Orb.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -18,6 +19,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from fnmatch import fnmatchcase
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -39,8 +41,49 @@ QUOTE_DATA_PREFIX = "0x4f524231"  # ASCII ORB1 + random quote id bytes
 JUDGE_WALLET_PREFIX = "0x4a75646765"  # ASCII "Judge" prefix in 20-byte address
 
 
+DEFAULT_TRUSTED_ORIGINS = (
+    "https://orb-azure-ten.vercel.app",
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+)
+# Vercel preview deployments of this project only (not every *.vercel.app site).
+DEFAULT_TRUSTED_ORIGIN_PATTERNS = (
+    "https://orb-azure-ten-*.vercel.app",
+    "https://orb-git-*.vercel.app",
+)
+STATELESS_CHALLENGE_PREFIX = "sc."
+STATELESS_SESSION_PREFIX = "ws_"
+JUDGE_SESSION_PREFIX = "jg_"
+
+
 def is_judge_wallet(wallet: str | None) -> bool:
     return isinstance(wallet, str) and wallet.lower().startswith(JUDGE_WALLET_PREFIX)
+
+
+def split_origins(value) -> tuple[str, ...]:
+    """Normalize a comma-separated origin list (or sequence) into unique, slash-free origins."""
+    items = value.split(",") if isinstance(value, str) else list(value or ())
+    seen: list[str] = []
+    for item in items:
+        origin = str(item).strip().rstrip("/")
+        if origin and origin not in seen:
+            seen.append(origin)
+    return tuple(seen)
+
+
+def is_serverless_runtime() -> bool:
+    return bool(
+        os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "").strip()
+        or os.environ.get("ORB_SERVERLESS_SYNC", "").strip() == "1"
+    )
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
 class CreditError(Exception):
@@ -70,6 +113,26 @@ class CreditConfig:
     judge_daily_cap: int = 150
     judge_ip_daily_limit: int = 3
     judge_session_credits: int = 10
+    allowed_origins: tuple[str, ...] = ()
+    allowed_origin_patterns: tuple[str, ...] = ()
+    session_secret: str = ""
+
+    @property
+    def public_origins(self) -> tuple[str, ...]:
+        return split_origins(self.public_origin)
+
+    @property
+    def primary_origin(self) -> str:
+        origins = self.public_origins
+        return origins[0] if origins else ""
+
+    @property
+    def trusted_origins(self) -> tuple[str, ...]:
+        return split_origins(self.public_origins + split_origins(self.allowed_origins) + DEFAULT_TRUSTED_ORIGINS)
+
+    @property
+    def trusted_origin_patterns(self) -> tuple[str, ...]:
+        return split_origins(split_origins(self.allowed_origin_patterns) + DEFAULT_TRUSTED_ORIGIN_PATTERNS)
 
     def __post_init__(self) -> None:
         if (self.payment_method not in {"native", "native_eth", "usdg"} or self.chain_id != CHAIN_ID
@@ -93,12 +156,15 @@ class CreditConfig:
                 or type(self.judge_session_credits) is not int or not 1 <= self.judge_session_credits <= 100):
             raise ValueError("Invalid Judge Demo Mode limits.")
         if self.enabled:
-            origin = urlparse(self.public_origin)
             rpc = urlparse(self.rpc_url)
-            if (not origin.scheme or not origin.netloc or origin.path not in {"", "/"}
-                    or origin.query or origin.fragment
-                    or (origin.scheme != "https" and origin.hostname not in {"localhost", "127.0.0.1"})
-                    or rpc.scheme != "https" or not rpc.netloc or not is_address(self.receiver)):
+            origins_ok = bool(self.public_origins)
+            for value in self.public_origins:
+                origin = urlparse(value)
+                if (not origin.scheme or not origin.netloc or origin.path not in {"", "/"}
+                        or origin.query or origin.fragment
+                        or (origin.scheme != "https" and origin.hostname not in {"localhost", "127.0.0.1"})):
+                    origins_ok = False
+            if not origins_ok or rpc.scheme != "https" or not rpc.netloc or not is_address(self.receiver):
                 raise ValueError("Orb credit configuration requires a trusted origin, HTTPS RPC, and receiver address.")
 
     @property
@@ -147,9 +213,9 @@ class CreditService:
         if not self.config.ready:
             raise CreditError("Arbitrum Sepolia testnet credits are not configured.", 503)
 
-    def challenge(self, address: str, origin: str | None) -> dict:
+    def challenge(self, address: str, origin: str | None, request_hosts: tuple[str, ...] = ()) -> dict:
         self._require_ready()
-        self._check_origin(origin)
+        self._check_origin(origin, request_hosts)
         if not is_address(address):
             raise CreditError("Enter a valid wallet address.")
         wallet = to_checksum_address(address)
@@ -160,28 +226,43 @@ class CreditService:
         effective_origin = (
             norm_origin
             if (norm_origin and urlparse(norm_origin).netloc)
-            else self.config.public_origin
+            else self.config.primary_origin
         )
         parsed = urlparse(effective_origin)
         message = (f"{parsed.netloc} wants you to sign in with your Ethereum account:\n{wallet}\n\n"
                    "Sign in to Orb's Arbitrum Sepolia testnet demo.\n\n"
                    f"URI: {effective_origin}\nVersion: 1\nChain ID: {CHAIN_ID}\n"
                    f"Nonce: {nonce}\nIssued At: {issued}\nExpiration Time: {expiry}")
+        exp_ts = int(time.time()) + 300
+        if is_serverless_runtime() and self._secret():
+            # Stateless nonce: embeds the exact message + expiry, HMAC-signed, so sign-in
+            # succeeds even when it lands on a different warm Lambda container.
+            payload = _b64url_encode(json.dumps(
+                {"w": wallet.lower(), "m": message, "e": exp_ts}, separators=(",", ":")).encode("utf-8"))
+            nonce = f"{STATELESS_CHALLENGE_PREFIX}{payload}.{self._sign('challenge', payload)}"
         with self._db() as db:
             db.execute("INSERT INTO challenges VALUES (?, ?, ?, ?, 0)",
-                       (nonce, wallet.lower(), message, int(time.time()) + 300))
+                       (nonce, wallet.lower(), message, exp_ts))
         return {"nonce": nonce, "message": message, "expires_at": expiry}
 
     create_challenge = challenge
 
-    def sign_in(self, nonce: str, signature: str, origin: str | None) -> dict:
+    def sign_in(self, nonce: str, signature: str, origin: str | None,
+                request_hosts: tuple[str, ...] = ()) -> dict:
         self._require_ready()
-        self._check_origin(origin)
-        if not isinstance(nonce, str) or not isinstance(signature, str) or len(signature) > 256:
+        self._check_origin(origin, request_hosts)
+        if (not isinstance(nonce, str) or len(nonce) > 4096
+                or not isinstance(signature, str) or len(signature) > 256):
             raise CreditError("Invalid wallet signature.", 401)
         with self._db() as db:
             db.begin_write()
             row = db.execute("SELECT * FROM challenges WHERE nonce=?" + self._lock(), (nonce,)).fetchone()
+            if row is None:
+                stateless = self._decode_stateless_challenge(nonce)
+                if stateless is not None:
+                    db.execute("INSERT INTO challenges VALUES (?, ?, ?, ?, 0)",
+                               (nonce, stateless["w"], stateless["m"], stateless["e"]))
+                    row = db.execute("SELECT * FROM challenges WHERE nonce=?" + self._lock(), (nonce,)).fetchone()
             if row is None or row["used"] or row["expires"] < time.time():
                 raise CreditError("Sign-in challenge expired or already used.", 401)
             try:
@@ -191,8 +272,11 @@ class CreditService:
             if signer.lower() != row["wallet"]:
                 raise CreditError("Signature does not match the requested wallet.", 401)
             db.execute("UPDATE challenges SET used=1 WHERE nonce=?", (nonce,))
-            token = secrets.token_urlsafe(32)
             expires = int(time.time()) + 3600
+            if is_serverless_runtime() and self._secret():
+                token = self._stateless_token(STATELESS_SESSION_PREFIX, row["wallet"], expires)
+            else:
+                token = secrets.token_urlsafe(32)
             db.execute("INSERT INTO sessions VALUES (?, ?, ?)",
                        (hashlib.sha256(token.encode()).hexdigest(), row["wallet"], expires))
             db.execute("INSERT INTO balances(wallet) VALUES (?) ON CONFLICT DO NOTHING", (row["wallet"],))
@@ -210,34 +294,10 @@ class CreditService:
         with self._db() as db:
             row = db.execute("SELECT wallet, expires FROM sessions WHERE token_hash=?",
                              (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
-        if row is None and self.config.judge_ready and token.startswith("jg_") and (
-            os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "").strip()
-            or os.environ.get("ORB_SERVERLESS_SYNC", "").strip() == "1"
-        ):
-            parts = token.split("_")
-            if len(parts) == 5:
-                _, wallet_hex, expires_str, rand_hex, sig = parts
-                wallet_cand = f"0x{wallet_hex}".lower()
-                if expires_str.isdigit() and int(expires_str) > time.time() and is_judge_wallet(wallet_cand):
-                    expected_sig = hmac.new(
-                        self.config.judge_demo_code.strip().encode("utf-8"),
-                        f"{wallet_cand}:{expires_str}:{rand_hex}".encode("utf-8"),
-                        hashlib.sha256,
-                    ).hexdigest()[:24]
-                    if hmac.compare_digest(sig, expected_sig):
-                        exp_int = int(expires_str)
-                        with self._db() as db:
-                            db.begin_write()
-                            db.execute(
-                                "INSERT INTO sessions VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-                                (hashlib.sha256(token.encode()).hexdigest(), wallet_cand, exp_int),
-                            )
-                            db.execute(
-                                "INSERT INTO balances(wallet, granted, consumed, reserved) VALUES (?, ?, 0, 0) ON CONFLICT DO NOTHING",
-                                (wallet_cand, self.config.judge_session_credits),
-                            )
-                            db.commit()
-                        return wallet_cand
+        if row is None and is_serverless_runtime():
+            restored = self._restore_stateless_session(token)
+            if restored is not None:
+                return restored
         if row is None or row["expires"] <= time.time():
             raise CreditError("Wallet session expired. Sign again.", 401)
         return row["wallet"]
@@ -249,10 +309,85 @@ class CreditService:
         with self._db() as db:
             db.execute("DELETE FROM sessions WHERE token_hash=? AND wallet=?", (token_hash, wallet))
 
-    def _check_origin(self, origin: str | None) -> None:
+    # --- Stateless (cross-container) HMAC tokens -------------------------------------
+    def _secret(self, prefix: str = "") -> bytes:
+        if prefix == JUDGE_SESSION_PREFIX and not self.config.session_secret:
+            return self.config.judge_demo_code.strip().encode("utf-8")
+        return (self.config.session_secret or "").strip().encode("utf-8")
+
+    def _sign(self, purpose: str, payload: str, prefix: str = "") -> str:
+        return hmac.new(self._secret(prefix), f"{purpose}:{payload}".encode("utf-8"),
+                        hashlib.sha256).hexdigest()[:32]
+
+    def _stateless_token(self, prefix: str, wallet: str, expires: int) -> str:
+        rand_hex = secrets.token_hex(8)
+        body = f"{wallet.lower()[2:]}_{expires}_{rand_hex}"
+        return f"{prefix}{body}_{self._sign('session', prefix + body, prefix)}"
+
+    def _decode_stateless_challenge(self, nonce: str) -> dict | None:
+        if not (is_serverless_runtime() and self._secret() and nonce.startswith(STATELESS_CHALLENGE_PREFIX)):
+            return None
+        try:
+            payload, sig = nonce[len(STATELESS_CHALLENGE_PREFIX):].rsplit(".", 1)
+            if not hmac.compare_digest(sig, self._sign("challenge", payload)):
+                return None
+            data = json.loads(_b64url_decode(payload).decode("utf-8"))
+            if (not isinstance(data, dict) or not is_address(data.get("w", ""))
+                    or not isinstance(data.get("m"), str) or not isinstance(data.get("e"), int)):
+                return None
+            return {"w": str(data["w"]).lower(), "m": data["m"], "e": int(data["e"])}
+        except (ValueError, TypeError, UnicodeDecodeError):
+            return None
+
+    def _restore_stateless_session(self, token: str) -> str | None:
+        prefix = next((p for p in (STATELESS_SESSION_PREFIX, JUDGE_SESSION_PREFIX) if token.startswith(p)), None)
+        if prefix is None or not self._secret(prefix):
+            return None
+        if prefix == JUDGE_SESSION_PREFIX and not self.config.judge_ready:
+            return None
+        parts = token[len(prefix):].split("_")
+        if len(parts) != 4:
+            return None
+        wallet_hex, expires_str, rand_hex, sig = parts
+        body = f"{wallet_hex}_{expires_str}_{rand_hex}"
+        wallet = f"0x{wallet_hex}".lower()
+        if (not expires_str.isdigit() or int(expires_str) <= time.time() or not is_address(wallet)
+                or (prefix == JUDGE_SESSION_PREFIX) != is_judge_wallet(wallet)
+                or not hmac.compare_digest(sig, self._sign("session", prefix + body, prefix))):
+            return None
+        with self._db() as db:
+            db.begin_write()
+            db.execute("INSERT INTO sessions VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                       (hashlib.sha256(token.encode()).hexdigest(), wallet, int(expires_str)))
+            granted = self.config.judge_session_credits if prefix == JUDGE_SESSION_PREFIX else 0
+            db.execute("INSERT INTO balances(wallet, granted, consumed, reserved) VALUES (?, ?, 0, 0) "
+                       "ON CONFLICT DO NOTHING", (wallet, granted))
+            db.commit()
+        return wallet
+
+    # --- Origin trust ------------------------------------------------------------------
+    def is_trusted_origin(self, origin: str | None, request_hosts: tuple[str, ...] = ()) -> bool:
         norm_origin = (origin or "").strip().rstrip("/")
-        norm_public = (self.config.public_origin or "").strip().rstrip("/")
-        if norm_origin and norm_origin == norm_public:
+        if not norm_origin:
+            return False
+        if norm_origin in self.config.trusted_origins:
+            return True
+        parsed = urlparse(norm_origin)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+        if parsed.scheme == "https" and any(fnmatchcase(norm_origin.lower(), pattern.lower())
+                                            for pattern in self.config.trusted_origin_patterns):
+            return True
+        # Same-origin: the page was served by this very API host (e.g. the Lambda Function URL).
+        hosts = {h.strip().lower() for h in request_hosts if h and h.strip()}
+        if parsed.netloc.lower() in hosts and (parsed.scheme == "https" or parsed.hostname in {"localhost", "127.0.0.1"}):
+            return True
+        return False
+
+    def _check_origin(self, origin: str | None, request_hosts: tuple[str, ...] = ()) -> None:
+        norm_origin = (origin or "").strip().rstrip("/")
+        norm_public = self.config.primary_origin
+        if self.is_trusted_origin(norm_origin, request_hosts):
             return
         if os.environ.get("ORB_ENV") == "local":
             p_pub = urlparse(norm_public) if norm_public else None
@@ -269,11 +404,12 @@ class CreditService:
                     return
         raise CreditError("Wallet request origin is not trusted.", 403)
 
-    def create_judge_session(self, code: str, client_ip: str, origin: str | None = None) -> dict:
+    def create_judge_session(self, code: str, client_ip: str, origin: str | None = None,
+                             request_hosts: tuple[str, ...] = ()) -> dict:
         if not self.config.judge_ready:
             raise CreditError("Judge Demo Mode is not enabled on this server.", 503)
         if origin is not None and self.config.public_origin:
-            self._check_origin(origin)
+            self._check_origin(origin, request_hosts)
         candidate = code.strip() if isinstance(code, str) else ""
         expected = self.config.judge_demo_code.strip()
         if not candidate or len(candidate) > 256 or not hmac.compare_digest(
@@ -307,13 +443,7 @@ class CreditService:
             credits = min(self.config.judge_session_credits, self.config.judge_daily_cap - used_today)
             wallet = f"{JUDGE_WALLET_PREFIX}{day}{secrets.token_hex(11)}"
             expires = int(time.time()) + 3600
-            rand_hex = secrets.token_hex(8)
-            sig = hmac.new(
-                expected.encode("utf-8"),
-                f"{wallet}:{expires}:{rand_hex}".encode("utf-8"),
-                hashlib.sha256,
-            ).hexdigest()[:24]
-            token = f"jg_{wallet[2:]}_{expires}_{rand_hex}_{sig}"
+            token = self._stateless_token(JUDGE_SESSION_PREFIX, wallet, expires)
             nonce = f"judge:{day}:{secrets.token_hex(12)}"
             db.execute("INSERT INTO challenges VALUES (?, ?, ?, ?, 1)", (nonce, wallet, ip_marker, expires))
             db.execute("INSERT INTO sessions VALUES (?, ?, ?)",

@@ -20,6 +20,7 @@ import argparse
 import base64
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -285,7 +286,24 @@ def wait_until_lambda_ready(lambda_client: Any, fn_name: str) -> None:
         time.sleep(2)
 
 
-def lambda_env_vars(bucket: str) -> dict[str, str]:
+LAMBDA_FUNCTION_URL = "https://jsnwiqkw5sqs3c7hag6ywd3ngm0vljpc.lambda-url.us-east-1.on.aws"
+
+
+def existing_lambda_env(lambda_client: Any) -> dict[str, str]:
+    try:
+        cfg = lambda_client.get_function_configuration(FunctionName=FUNCTION_NAME)
+        return dict((cfg.get("Environment") or {}).get("Variables") or {})
+    except ClientError:
+        return {}
+
+
+def lambda_env_vars(bucket: str, existing: dict[str, str] | None = None) -> dict[str, str]:
+    existing = existing or {}
+    session_secret = (
+        os.environ.get("ORB_SESSION_SECRET", "").strip()
+        or existing.get("ORB_SESSION_SECRET", "").strip()
+        or secrets.token_urlsafe(48)
+    )
     gemini_key = (
         os.environ.get("GEMINI_API_KEY", "").strip()
         or os.environ.get("GOOGLE_API_KEY", "").strip()
@@ -300,7 +318,8 @@ def lambda_env_vars(bucket: str) -> dict[str, str]:
         "ORB_JUDGE_DAILY_CAP": os.environ.get("ORB_JUDGE_DAILY_CAP", "150").strip() or "150",
         "ORB_JUDGE_IP_DAILY_LIMIT": "25",
         "ORB_CREDITS_ENABLED": "1",
-        "ORB_PUBLIC_ORIGIN": "https://orb-azure-ten.vercel.app",
+        "ORB_PUBLIC_ORIGIN": f"https://orb-azure-ten.vercel.app,{LAMBDA_FUNCTION_URL}",
+        "ORB_SESSION_SECRET": session_secret,
         "PROMETHEUS_CORS_ORIGINS": "https://orb-azure-ten.vercel.app,http://localhost:5173,http://127.0.0.1:8000",
         "ORB_ARBITRUM_RPC_URL": os.environ.get(
             "ORB_ARBITRUM_RPC_URL", "https://sepolia-rollup.arbitrum.io/rpc"
@@ -379,7 +398,7 @@ def deploy(mode: str = "auto", skip_upload: bool = False) -> str:
     iam = session.client("iam")
     role_arn = ensure_lambda_role(iam)
     lambda_client = session.client("lambda")
-    env_vars = lambda_env_vars(bucket)
+    env_vars = lambda_env_vars(bucket, existing_lambda_env(lambda_client))
 
     use_image = mode == "image" or (mode == "auto" and docker_available())
 

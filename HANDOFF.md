@@ -1787,5 +1787,30 @@ a temporary process-only model override described below.
 - **Verification:**
   - `pytest tests/test_opencv_telemetry.py tests/test_orb_credits.py -q` (`25 passed`).
 
+## 2026-10-20 — Multi-Origin Web3 Wallet Trust & Cross-Container Stateless Auth on AWS Graviton2 Lambda
+
+- **Problem:**
+  - When connecting crypto wallets on the live deployment, users encountered `"Wallet request origin is not trusted."`.
+  - In addition, AWS Lambda container instances do not share local disk (`/tmp`), so in-memory/SQLite nonces and session tokens issued on Container A failed on Container B with `401 Wallet session expired`.
+- **Root Cause & Solution 1 — Multi-Origin Trust & Dynamic Host Matching (`prometheus/api/orb_credits.py`, `prometheus/api/app.py`):**
+  - Updated `CreditConfig` to parse comma-separated `ORB_PUBLIC_ORIGIN` and `ORB_ALLOWED_ORIGINS` via `split_origins()`.
+  - Added support for trusted origin patterns including Vercel preview domains (`https://.*\.vercel\.app`) and Lambda Function URLs (`https://.*\.lambda-url\..*\.on\.aws`).
+  - Added request header inspection (`Host` / `X-Forwarded-Host`) to dynamically trust direct requests matching the server's own public endpoint.
+  - Configured FastAPI `CORSMiddleware` with all trusted origins, wildcards, and credentials support.
+- **Solution 2 — Stateless HMAC Challenge Nonces (`sc.*`) and Session Tokens (`ws_*`) (`prometheus/api/orb_credits.py`):**
+  - Replaced random, state-dependent challenge nonces with HMAC-SHA256 signed stateless nonces (`sc.<payload>.<sig>`) encoding the wallet address, expiry timestamp, and client host.
+  - Implemented HMAC-SHA256 signed stateless wallet session tokens (`ws_<wallet>_<expires>_<rand>_<sig>`), allowing any warm Lambda container to authenticate and restore wallet balances on-the-fly with zero shared database requirements.
+  - Configured persistent `ORB_SESSION_SECRET` generation in `deploy/deploy_aws_lambda.py`.
+- **Solution 3 — Lambda Packaging Fix for `eth-typing` (`deploy/deploy_aws_lambda.py`):**
+  - Retained `*.dist-info` package metadata in the zip packager while stripping `__pycache__`, resolving `importlib.metadata.PackageNotFoundError: No package metadata was found for eth-typing`.
+- **Live AWS Lambda Redeployment & Verification:**
+  - Full test suite: `pytest tests/test_orb_credits.py -q` (`27 passed`, 100%).
+  - Successfully redeployed `orb-opencv5-api` to AWS Graviton2 (`arm64`, 512 MB) in `us-east-1` with `ORB_PUBLIC_ORIGIN="https://orb-azure-ten.vercel.app,https://jsnwiqkw5sqs3c7hag6ywd3ngm0vljpc.lambda-url.us-east-1.on.aws"`.
+  - Verified live wallet challenge, SIWE signature verification, and 5 repeated cross-container balance calls against `https://jsnwiqkw5sqs3c7hag6ywd3ngm0vljpc.lambda-url.us-east-1.on.aws/`:
+    - `https://orb-azure-ten.vercel.app`: Challenge `200` (`sc.`), Sign-in `200` (`ws_`), 5/5 Balance checks `200 OK`.
+    - Lambda URL direct: Challenge `200` (`sc.`), Sign-in `200` (`ws_`), 5/5 Balance checks `200 OK`.
+    - `https://evil.example`: Correctly rejected with `403 {'detail': 'Wallet request origin is not trusted.'}`.
+
+
 
 

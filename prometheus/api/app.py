@@ -29,7 +29,14 @@ from prometheus.analysis.remix import apply_remix
 from prometheus.analysis.schema import AnalysisReport
 from prometheus.api.dto import build_basic_result_dto, build_result_dto
 from prometheus.api.jobs import Job, JobManager
-from prometheus.api.orb_credits import CHAIN_ID, CreditConfig, CreditError, CreditService
+from prometheus.api.orb_credits import (
+    CHAIN_ID,
+    DEFAULT_TRUSTED_ORIGIN_PATTERNS,
+    CreditConfig,
+    CreditError,
+    CreditService,
+    split_origins,
+)
 from prometheus.api.orb_deployment import validate_public_deployment
 from prometheus.api.orb_usdg import USDG_PRICE, parse_usdg_price
 from prometheus.api.payments import PaymentConfig, PaymentError, PaymentPending, PaymentService
@@ -276,7 +283,10 @@ def create_app(
     credit_service = orb_credit_service or CreditService(CreditConfig(
         database=credit_db,
         database_url=database_url if public_mode else "",
-        public_origin=os.environ.get("ORB_PUBLIC_ORIGIN", "").rstrip("/"),
+        public_origin=",".join(split_origins(os.environ.get("ORB_PUBLIC_ORIGIN", ""))),
+        allowed_origins=split_origins(os.environ.get("ORB_ALLOWED_ORIGINS", "")),
+        allowed_origin_patterns=split_origins(os.environ.get("ORB_ALLOWED_ORIGIN_PATTERNS", "")),
+        session_secret=os.environ.get("ORB_SESSION_SECRET", "").strip(),
         rpc_url=os.environ.get("ORB_ARBITRUM_RPC_URL", ""),
         receiver=receiver_addr,
         price_wei=int(os.environ.get("ORB_CREDIT_PRICE_WEI", "1000000000000")),
@@ -328,15 +338,22 @@ def create_app(
     app = FastAPI(title="Orb", version=__version__, docs_url="/api/docs")
     app.add_middleware(TimingMiddleware)
     app.state.prometheus_startup_complete = _is_serverless_sync()
-    orb_origin = os.environ.get("ORB_PUBLIC_ORIGIN", "").rstrip("/")
-    cors_origins = [orb_origin] if orb_origin else []
+    cors_origins = list(split_origins(os.environ.get("ORB_PUBLIC_ORIGIN", ""))
+                        + split_origins(os.environ.get("ORB_ALLOWED_ORIGINS", "")))
+    if credit_service.config.public_origin:
+        cors_origins.extend(o for o in credit_service.config.trusted_origins if o not in cors_origins)
     if os.environ.get("ORB_ENV") == "local":
         cors_origins.extend(origin for origin in _cors_origins(os.environ.get("PROMETHEUS_CORS_ORIGINS"))
                             if origin not in cors_origins)
+    preview_regex = "|".join(
+        re.escape(p).replace(r"\*", "[a-z0-9-]+")
+        for p in credit_service.config.trusted_origin_patterns
+    ) if credit_service.config.public_origin else ""
     if cors_origins:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
+            allow_origin_regex=f"^(?:{preview_regex})$" if preview_regex else None,
             allow_credentials=False,
             allow_methods=["GET", "POST", "OPTIONS"],
             allow_headers=["Content-Type", "Authorization", "X-Orb-Idempotency-Key"],
@@ -344,6 +361,11 @@ def create_app(
     manager = JobManager(max_workers=1)
     staged_uploads: dict[str, tuple[str, Path, float]] = {}
     staged_uploads_lock = threading.Lock()
+
+    def _request_hosts(request: Request) -> tuple[str, ...]:
+        hosts = [request.headers.get("host", "")]
+        hosts.extend(part.strip() for part in request.headers.get("x-forwarded-host", "").split(","))
+        return tuple(h for h in hosts if h)
 
     def _client_ip(request: Request) -> str:
         forwarded = request.headers.get("x-forwarded-for", "")
@@ -378,7 +400,7 @@ def create_app(
             raise HTTPException(status_code=402, detail="AI operations require verified testnet credits. Payments are not configured.")
         try:
             if credit_service.config.public_origin:
-                credit_service._check_origin(request.headers.get("origin"))
+                credit_service._check_origin(request.headers.get("origin"), _request_hosts(request))
             return credit_service.authenticate(auth_header)
         except CreditError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
@@ -386,7 +408,7 @@ def create_app(
     def _wallet(request: Request, *, mutating: bool = False) -> str:
         try:
             if mutating and credit_service.config.public_origin:
-                credit_service._check_origin(request.headers.get("origin"))
+                credit_service._check_origin(request.headers.get("origin"), _request_hosts(request))
             return credit_service.authenticate(request.headers.get("authorization"))
         except CreditError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
@@ -662,6 +684,7 @@ def create_app(
                 payload.get("code", "") if isinstance(payload, dict) else "",
                 _client_ip(request),
                 request.headers.get("origin"),
+                _request_hosts(request),
             )
         except CreditError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
@@ -669,7 +692,8 @@ def create_app(
     @app.post("/api/orb/wallet/challenge")
     def orb_wallet_challenge(request: Request, payload: dict) -> dict:
         try:
-            return credit_service.challenge(payload.get("address", ""), request.headers.get("origin"))
+            return credit_service.challenge(payload.get("address", ""), request.headers.get("origin"),
+                                            _request_hosts(request))
         except CreditError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
@@ -677,7 +701,7 @@ def create_app(
     def orb_wallet_sign_in(request: Request, payload: dict) -> dict:
         try:
             return credit_service.sign_in(payload.get("nonce", ""), payload.get("signature", ""),
-                                          request.headers.get("origin"))
+                                          request.headers.get("origin"), _request_hosts(request))
         except CreditError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
@@ -685,7 +709,7 @@ def create_app(
     def orb_wallet_logout(request: Request) -> dict:
         try:
             if credit_service.config.public_origin or request.headers.get("origin") is not None:
-                credit_service._check_origin(request.headers.get("origin"))
+                credit_service._check_origin(request.headers.get("origin"), _request_hosts(request))
             credit_service.logout(request.headers.get("authorization"))
         except CreditError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
