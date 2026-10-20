@@ -1,0 +1,49 @@
+name: Deploy Orb OpenCV 5.0 API to AWS Lambda (Arm64 Graviton)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "Dockerfile.lambda"
+      - "deploy/deploy_aws_lambda.py"
+      - ".github/workflows/deploy-aws-lambda.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-lambda-arm64:
+    name: Build & Deploy linux/arm64 Graviton Image to AWS Lambda
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js & Build Web UI
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: |
+          npm ci
+          npm run build
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deployment dependencies
+        run: pip install boto3
+
+      - name: Deploy to AWS ECR + Lambda (Arm64 Graviton)
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          ORB_AWS_S3_BUCKET: ${{ secrets.ORB_AWS_S3_BUCKET || 'orb-opencv5-vision-2026' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ORB_JUDGE_DEMO_CODE: ${{ secrets.ORB_JUDGE_DEMO_CODE || 'OPENCV2026' }}
+        run: python deploy/deploy_aws_lambda.py --mode image

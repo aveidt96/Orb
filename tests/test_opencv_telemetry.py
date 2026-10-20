@@ -190,9 +190,16 @@ def test_opencv_native_video_fallbacks_when_ffmpeg_missing(tmp_path: Path, monke
 
 
 def test_aws_s3_artifact_sync_and_telemetry_metadata(tmp_path: Path, monkeypatch):
+    import io
+    import json
     from unittest.mock import MagicMock
     from prometheus.api.app import handler
-    from prometheus.storage.aws_s3 import sync_job_artifacts_to_s3
+    from prometheus.storage.aws_s3 import (
+        load_serverless_frame_from_s3,
+        load_serverless_job_state_from_s3,
+        save_serverless_job_state_to_s3,
+        sync_job_artifacts_to_s3,
+    )
 
     monkeypatch.setenv("ORB_AWS_S3_BUCKET", "orb-opencv-2026-artifacts")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
@@ -236,4 +243,14 @@ def test_aws_s3_artifact_sync_and_telemetry_metadata(tmp_path: Path, monkeypatch
     assert (run_dir / "opencv_telemetry.json").is_file()
     assert fake_s3.upload_file.call_count == 3
     assert handler is not None
+
+    state_payload = {"id": "job999", "state": "complete", "tier": "decode", "stage": "Complete", "result": {"prompt": "test"}}
+    assert save_serverless_job_state_to_s3("job999", state_payload, s3_client=fake_s3) is True
+    fake_s3.get_object.return_value = {"Body": io.BytesIO(json.dumps(state_payload).encode("utf-8"))}
+    loaded_state = load_serverless_job_state_from_s3("job999", s3_client=fake_s3)
+    assert loaded_state == state_payload
+
+    fake_s3.get_object.return_value = {"Body": io.BytesIO(b"fake-jpeg-bytes")}
+    frame_res = load_serverless_frame_from_s3("job999", "opencv_hud_overlay.jpg", s3_client=fake_s3)
+    assert frame_res == (b"fake-jpeg-bytes", "image/jpeg")
 

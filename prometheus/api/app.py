@@ -66,7 +66,9 @@ _DOTENV_LOADED = False
 
 def _load_local_dotenv_defaults() -> None:
     global _DOTENV_LOADED
-    if _DOTENV_LOADED or "PYTEST_CURRENT_TEST" in os.environ:
+    import sys
+
+    if _DOTENV_LOADED or "PYTEST_CURRENT_TEST" in os.environ or "PYTEST_VERSION" in os.environ or "pytest" in sys.modules:
         return
     _DOTENV_LOADED = True
     env_file = _ROOT_DIR / ".env"
@@ -228,6 +230,13 @@ def _log_upload_ping_lifecycle(ping_id: str, origin: str, lifecycle: str, status
     _LOG.info(fields)
 
 
+def _is_serverless_sync() -> bool:
+    return bool(
+        os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "").strip()
+        or os.environ.get("ORB_SERVERLESS_SYNC", "").strip() == "1"
+    )
+
+
 def create_app(
     provider: str | None = None,
     model: str | None = None,
@@ -243,12 +252,13 @@ def create_app(
     provider = provider or os.environ.get("ORB_AI_PROVIDER") or _resolve_provider()
     model = model or os.environ.get("ORB_AI_MODEL")
     public_mode = os.environ.get("ORB_ENV") == "production"
-    output_default = "/tmp/orb_output" if public_mode else "api_output"
-    upload_default = "/tmp/orb_uploads" if public_mode else "uploads"
+    use_tmp_dirs = public_mode or bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "").strip())
+    output_default = "/tmp/orb_output" if use_tmp_dirs else "api_output"
+    upload_default = "/tmp/orb_uploads" if use_tmp_dirs else "uploads"
     output_root = _storage_path(output_dir or os.environ.get("ORB_OUTPUT_DIR")
-                                or (output_default if public_mode else os.environ.get("PROMETHEUS_API_OUTPUT_DIR", output_default)))
+                                or (output_default if use_tmp_dirs else os.environ.get("PROMETHEUS_API_OUTPUT_DIR", output_default)))
     upload_root = _storage_path(upload_dir or os.environ.get("ORB_UPLOAD_DIR")
-                                or (upload_default if public_mode else os.environ.get("PROMETHEUS_API_UPLOAD_DIR", upload_default)))
+                                or (upload_default if use_tmp_dirs else os.environ.get("PROMETHEUS_API_UPLOAD_DIR", upload_default)))
     database_url = os.environ.get("ORB_DATABASE_URL", "")
     payment_method = os.environ.get("ORB_PAYMENT_METHOD", "native")
     payment_methods_value = os.environ.get("ORB_PAYMENT_METHODS")
@@ -317,7 +327,7 @@ def create_app(
 
     app = FastAPI(title="Orb", version=__version__, docs_url="/api/docs")
     app.add_middleware(TimingMiddleware)
-    app.state.prometheus_startup_complete = False
+    app.state.prometheus_startup_complete = _is_serverless_sync()
     orb_origin = os.environ.get("ORB_PUBLIC_ORIGIN", "").rstrip("/")
     cors_origins = [orb_origin] if orb_origin else []
     if os.environ.get("ORB_ENV") == "local":
@@ -893,12 +903,46 @@ def create_app(
                 with stage("credit_settlement"):
                     credit_service.settle(job.id, True)
             manager.update(job.id, run_dir=None if public_mode else run_dir, state="complete", stage="Complete")
-        except Exception:
+            try:
+                from prometheus.storage.aws_s3 import save_serverless_job_state_to_s3
+
+                save_serverless_job_state_to_s3(
+                    job.id,
+                    {
+                        "id": job.id,
+                        "state": "complete",
+                        "tier": operation,
+                        "stage": "Complete",
+                        "error": None,
+                        "wallet": wallet,
+                        "result": payload,
+                    },
+                )
+            except Exception as exc:
+                _LOG.debug("Serverless S3 job_state sync skipped: %s", exc)
+        except Exception as exc:
             if not result_saved:
                 shutil.rmtree(output_root / job.id, ignore_errors=True)
                 if wallet is not None:
                     with stage("credit_settlement"):
                         credit_service.settle(job.id, False)
+            try:
+                from prometheus.storage.aws_s3 import save_serverless_job_state_to_s3
+
+                save_serverless_job_state_to_s3(
+                    job.id,
+                    {
+                        "id": job.id,
+                        "state": "error",
+                        "tier": operation,
+                        "stage": "Error",
+                        "error": "AI processing failed. Check the server configuration or try again.",
+                        "wallet": wallet,
+                        "result": None,
+                    },
+                )
+            except Exception:
+                pass
             # A durable result remains reserved for restart reconciliation if
             # settlement itself failed. Never release a completed paid result.
             _LOG.exception("Orb %s job failed", operation)
@@ -909,8 +953,13 @@ def create_app(
                 if public_mode:
                     shutil.rmtree(output_root / job.id, ignore_errors=True)
 
+    @app.post("/api/jobs", status_code=202)
     @app.post("/api/orb/{operation}/file", status_code=202)
-    async def orb_visual(operation: str, request: Request, file: UploadFile = File(...)) -> dict:
+    async def orb_visual(
+        request: Request,
+        operation: str = "decode",
+        file: UploadFile = File(...),
+    ) -> dict:
         observe("request_parsed")
         if operation not in {"decode", "compose"}:
             raise HTTPException(status_code=404, detail="Unknown operation.")
@@ -930,7 +979,13 @@ def create_app(
                 manager.remove(job.id)
                 destination.unlink(missing_ok=True)
                 return {"job_id": reserved_job_id}
-            manager.submit(job.id, lambda: _run_orb_visual_job(job, destination, media, operation, wallet))
+            if _is_serverless_sync():
+                try:
+                    await run_in_threadpool(_run_orb_visual_job, job, destination, media, operation, wallet)
+                except Exception as exc:
+                    manager.update(job.id, state="error", error=str(exc))
+            else:
+                manager.submit(job.id, lambda: _run_orb_visual_job(job, destination, media, operation, wallet))
         except Exception:
             if wallet is not None:
                 with stage("credit_settlement"):
@@ -989,6 +1044,23 @@ def create_app(
                     with stage("credit_settlement"):
                         credit_service.settle(job.id, True)
                 manager.update(job.id, run_dir=None if public_mode else run_dir, state="complete", stage="Complete")
+                try:
+                    from prometheus.storage.aws_s3 import save_serverless_job_state_to_s3
+
+                    save_serverless_job_state_to_s3(
+                        job.id,
+                        {
+                            "id": job.id,
+                            "state": "complete",
+                            "tier": "enhance",
+                            "stage": "Complete",
+                            "error": None,
+                            "wallet": wallet,
+                            "result": result,
+                        },
+                    )
+                except Exception:
+                    pass
             except Exception:
                 if not result_saved:
                     shutil.rmtree(output_root / job.id, ignore_errors=True)
@@ -1002,7 +1074,13 @@ def create_app(
                     shutil.rmtree(output_root / job.id, ignore_errors=True)
 
         try:
-            manager.submit(job.id, run)
+            if _is_serverless_sync():
+                try:
+                    await run_in_threadpool(run)
+                except Exception as exc:
+                    manager.update(job.id, state="error", error=str(exc))
+            else:
+                manager.submit(job.id, run)
         except Exception:
             if wallet is not None:
                 with stage("credit_settlement"):
@@ -1105,6 +1183,20 @@ def create_app(
                     "stage": "Complete", "error": None}
         if job is None:
             if paid is None:
+                from prometheus.storage.aws_s3 import load_serverless_job_state_from_s3
+
+                s3_state = load_serverless_job_state_from_s3(job_id)
+                if s3_state is not None:
+                    s3_wallet = s3_state.get("wallet")
+                    if s3_wallet and _wallet(request) != s3_wallet:
+                        raise HTTPException(status_code=404, detail="Unknown job.")
+                    return {
+                        "id": job_id,
+                        "state": s3_state.get("state", "complete"),
+                        "tier": s3_state.get("tier", "decode"),
+                        "stage": s3_state.get("stage", "Complete"),
+                        "error": s3_state.get("error"),
+                    }
                 raise HTTPException(status_code=404, detail="Unknown job.")
             state = "error" if paid["status"] == "released" else "processing"
             return {"id": job_id, "state": state, "tier": paid["operation"],
@@ -1129,6 +1221,17 @@ def create_app(
         if paid and paid["status"] == "consumed" and durable_result is not None:
             return durable_result
         if job is None:
+            from prometheus.storage.aws_s3 import load_serverless_job_state_from_s3
+
+            s3_state = load_serverless_job_state_from_s3(job_id)
+            if s3_state is not None:
+                s3_wallet = s3_state.get("wallet")
+                if s3_wallet and _wallet(request) != s3_wallet:
+                    raise HTTPException(status_code=404, detail="Unknown job.")
+                if s3_state.get("state") == "error":
+                    raise HTTPException(status_code=502, detail=s3_state.get("error") or "Analysis failed.")
+                if isinstance(s3_state.get("result"), dict):
+                    return s3_state["result"]
             raise HTTPException(status_code=404, detail="Unknown job.")
         if job.state == "error":
             detail = "AI processing failed. Check the server configuration or try again." if job.tier in {"decode", "compose", "enhance"} else job.error or "Analysis failed."
@@ -1142,6 +1245,11 @@ def create_app(
         if job.tier in {"decode", "compose", "enhance"}:
             saved = credit_service.result(job.id, output_root)
             if saved is None:
+                from prometheus.storage.aws_s3 import load_serverless_job_state_from_s3
+
+                s3_state = load_serverless_job_state_from_s3(job_id)
+                if s3_state and isinstance(s3_state.get("result"), dict):
+                    return s3_state["result"]
                 raise HTTPException(status_code=503, detail="Orb result is temporarily unavailable.")
             return saved
         return build_result_dto(job.id, job.run_dir, job.video_name, job.source_file)
@@ -1173,21 +1281,37 @@ def create_app(
         return {"applied": applied, "prompt_markdown": prompt_markdown}
 
     @app.get("/api/jobs/{job_id}/frames/{file_path:path}")
-    def job_frame(request: Request, job_id: str, file_path: str) -> FileResponse:
+    def job_frame(request: Request, job_id: str, file_path: str) -> Response:
         paid = _paid_job_owner(request, job_id)
         if public_mode:
             raise HTTPException(status_code=404, detail="Temporary media is not retained.")
         job = manager.get(job_id)
         run_dir = job.run_dir if job else (output_root / job_id if paid and paid["status"] == "consumed" else None)
+        if run_dir is not None:
+            base = run_dir.resolve()
+            target = (base / file_path).resolve()
+            if not target.is_relative_to(base):
+                raise HTTPException(status_code=400, detail="Invalid frame path.")
+            if target.is_file():
+                return FileResponse(target)
+        from prometheus.storage.aws_s3 import (
+            load_serverless_frame_from_s3,
+            load_serverless_job_state_from_s3,
+        )
+
+        if paid is None and job is None:
+            s3_state = load_serverless_job_state_from_s3(job_id)
+            if s3_state is not None:
+                s3_wallet = s3_state.get("wallet")
+                if s3_wallet and _wallet(request) != s3_wallet:
+                    raise HTTPException(status_code=404, detail="Frames not available.")
+        s3_frame = load_serverless_frame_from_s3(job_id, file_path)
+        if s3_frame is not None:
+            body, content_type = s3_frame
+            return Response(content=body, media_type=content_type)
         if run_dir is None:
             raise HTTPException(status_code=404, detail="Frames not available.")
-        base = run_dir.resolve()
-        target = (base / file_path).resolve()
-        if not target.is_relative_to(base):
-            raise HTTPException(status_code=400, detail="Invalid frame path.")
-        if not target.is_file():
-            raise HTTPException(status_code=404, detail="Frame not found.")
-        return FileResponse(target)
+        raise HTTPException(status_code=404, detail="Frame not found.")
 
     if public_mode:
         @app.get("/")
@@ -1202,8 +1326,13 @@ def create_app(
 app = create_app()
 
 try:
+    import asyncio
     from mangum import Mangum  # type: ignore[import-not-found]
 
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
     handler = Mangum(app, lifespan="auto")
 except ImportError:  # pragma: no cover - fallback when mangum is not installed
     handler = None  # type: ignore[assignment]

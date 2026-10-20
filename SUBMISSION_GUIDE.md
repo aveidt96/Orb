@@ -117,8 +117,14 @@ Every visual job (`Decode` and `Compose`) generates deterministic OpenCV 5.0 dia
 
 It generates 24-hour pre-signed S3 URLs (`hud_s3_url`, `clahe_s3_url`), attaches `opencv_telemetry["aws_s3"]`, and renders the **`AWS S3 Cloud Synced (<bucket>)`** pill badge in the OpenCV 5.0 Agentic Telemetry card.
 
-### Component B: Serverless AWS Lambda (`arm64` Graviton) via `Mangum`
-`prometheus/api/app.py` exposes `handler = Mangum(app, lifespan="auto")`, allowing the exact same FastAPI + OpenCV 5.0 container to run on **AWS Lambda (Arm64 Graviton2)** with a built-in HTTPS Function URL—bypassing EC2 vCPU limits completely.
+### Component B: Serverless AWS Lambda (`arm64` Graviton2) via `Mangum` (`orb-opencv5-api`)
+`prometheus/api/app.py` exposes `handler = Mangum(app, lifespan="auto")` with serverless-safe synchronous execution (`ORB_SERVERLESS_SYNC=1`) and S3 job state/frame persistence (`s3://orb-opencv5-vision-2026/orb-jobs/<job_id>/job_state.json`), deployed live on **AWS Lambda (Arm64 Graviton2, `us-east-1`)** via `deploy/deploy_aws_lambda.py` and `Dockerfile.lambda`:
+- **Live AWS Graviton2 (`arm64`) HTTPS Function URL:**
+  **`https://jsnwiqkw5sqs3c7hag6ywd3ngm0vljpc.lambda-url.us-east-1.on.aws/`**
+- To redeploy or update the AWS Lambda function at any time:
+  ```powershell
+  .\.venv\Scripts\python.exe deploy/deploy_aws_lambda.py
+  ```
 
 ### Component C: Launching on AWS EC2 Graviton2 (`arm64`) with Automatic Cloudflared HTTPS Tunnel
 1. In the AWS Console, launch an **Ubuntu Server 24.04 LTS (HVM), SSD Volume Type — 64-bit (Arm)** instance (`t4g.small` or `t4g.micro`).

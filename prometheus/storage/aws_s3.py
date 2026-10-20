@@ -1,10 +1,10 @@
-"""Amazon S3 (AWS) Telemetry & Diagnostic Artifact Persistence for Orb.
+"""Amazon S3 (AWS) Telemetry, Serverless Job State & Diagnostic Artifact Persistence for Orb.
 
 Reads `ORB_AWS_S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
 `AWS_REGION` (default `"us-east-1"`) from the environment (or `.env` in the
 repository root). When configured, uploads OpenCV 5.0 diagnostic artifacts
 (`opencv_hud_overlay.jpg`, `opencv_clahe_enhanced.jpg`, and
-`opencv_telemetry.json`) to:
+`opencv_telemetry.json`) and serverless job state (`job_state.json`) to:
     s3://<ORB_AWS_S3_BUCKET>/orb-jobs/<job_id>/<filename>
 auto-creating the bucket if it does not yet exist, and generates 24-hour
 pre-signed S3 URLs (`hud_s3_url`, `clahe_s3_url`).
@@ -21,6 +21,7 @@ import hmac
 import json
 import logging
 import os
+import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -33,15 +34,24 @@ _ARTIFACT_CONTENT_TYPES: dict[str, str] = {
     "opencv_hud_overlay.jpg": "image/jpeg",
     "opencv_clahe_enhanced.jpg": "image/jpeg",
     "opencv_telemetry.json": "application/json",
+    "job_state.json": "application/json",
 }
 
 _PRESIGNED_EXPIRES_SECONDS = 86400  # 24 hours
 _VERIFIED_BUCKETS: set[str] = set()
 
 
+def _running_under_pytest() -> bool:
+    return bool(
+        "PYTEST_CURRENT_TEST" in os.environ
+        or "PYTEST_VERSION" in os.environ
+        or "pytest" in sys.modules
+    )
+
+
 def load_dotenv_aws_vars(dotenv_path: Path | None = None) -> None:
     """Load AWS / S3 variables from `.env` in repo root without overwriting set env vars."""
-    if "PYTEST_CURRENT_TEST" in os.environ and dotenv_path is None:
+    if _running_under_pytest() and dotenv_path is None:
         return
     env_file = dotenv_path or (_ROOT_DIR / ".env")
     if not env_file.is_file():
@@ -94,6 +104,17 @@ def get_aws_s3_config() -> dict[str, str]:
     }
 
 
+def _has_aws_credentials(cfg: dict[str, str], s3_client: Any | None = None) -> bool:
+    if _running_under_pytest() and s3_client is None and os.environ.get("ORB_ALLOW_PYTEST_LIVE_S3") != "1":
+        return False
+    return bool(
+        s3_client is not None
+        or (cfg["access_key"] and cfg["secret_key"])
+        or os.environ.get("AWS_EXECUTION_ENV", "").strip()
+        or os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "").strip()
+    )
+
+
 def build_aws_integration_metadata(
     artifacts_synced: list[str] | None = None,
     job_id: str | None = None,
@@ -116,7 +137,9 @@ def build_aws_integration_metadata(
     services: list[str] = []
     if s3_enabled:
         services.append("Amazon S3")
-    if aws_active:
+    if has_aws_exec:
+        services.append("AWS Lambda (Arm64 Graviton)")
+    elif aws_active:
         services.append("AWS Graviton / Compute Ready")
 
     synced_list = list(artifacts_synced or [])
@@ -369,6 +392,118 @@ def _upload_single_object(
         _put_s3_sigv4_fallback(cfg, s3_key, path.read_bytes(), content_type)
 
 
+def save_serverless_job_state_to_s3(
+    job_id: str,
+    job_state: dict[str, Any],
+    s3_client: Any | None = None,
+) -> bool:
+    """Persist serialized job state + result JSON to `s3://<bucket>/orb-jobs/<job_id>/job_state.json`."""
+    cfg = get_aws_s3_config()
+    bucket = cfg["bucket"]
+    if not (bucket and _has_aws_credentials(cfg, s3_client)):
+        return False
+    s3_key = f"orb-jobs/{job_id}/job_state.json"
+    body = json.dumps(job_state, indent=2).encode("utf-8")
+    client = s3_client
+    if client is None:
+        try:
+            client = _create_boto3_s3_client(cfg)
+        except Exception:
+            client = None
+    try:
+        if client is not None and hasattr(client, "put_object"):
+            try:
+                client.put_object(
+                    Bucket=bucket,
+                    Key=s3_key,
+                    Body=body,
+                    ContentType="application/json",
+                )
+            except Exception as first_exc:
+                if "NoSuchBucket" in str(first_exc) or "404" in str(first_exc):
+                    _ensure_bucket_exists(client, bucket, cfg["region"])
+                    client.put_object(
+                        Bucket=bucket,
+                        Key=s3_key,
+                        Body=body,
+                        ContentType="application/json",
+                    )
+                else:
+                    raise
+        else:
+            _put_s3_sigv4_fallback(cfg, s3_key, body, "application/json")
+        return True
+    except Exception as exc:
+        _LOG.debug("Could not persist serverless job_state.json for %s: %s", job_id, exc)
+        return False
+
+
+def load_serverless_job_state_from_s3(
+    job_id: str,
+    s3_client: Any | None = None,
+) -> dict[str, Any] | None:
+    """Fallback-read `s3://<bucket>/orb-jobs/<job_id>/job_state.json` across warm Lambda containers."""
+    cfg = get_aws_s3_config()
+    bucket = cfg["bucket"]
+    if not (bucket and _has_aws_credentials(cfg, s3_client)):
+        return None
+    s3_key = f"orb-jobs/{job_id}/job_state.json"
+    client = s3_client
+    if client is None:
+        try:
+            client = _create_boto3_s3_client(cfg)
+        except Exception:
+            client = None
+    try:
+        if client is not None and hasattr(client, "get_object"):
+            resp = client.get_object(Bucket=bucket, Key=s3_key)
+            raw = resp["Body"].read()
+            data = json.loads(raw.decode("utf-8"))
+            return data if isinstance(data, dict) else None
+        url = _presign_s3_sigv4_fallback(cfg, s3_key, expires_in=60)
+        if url:
+            with urllib.request.urlopen(url, timeout=4.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data if isinstance(data, dict) else None
+    except Exception as exc:
+        _LOG.debug("Could not load serverless job_state.json for %s: %s", job_id, exc)
+    return None
+
+
+def load_serverless_frame_from_s3(
+    job_id: str,
+    filename: str,
+    s3_client: Any | None = None,
+) -> tuple[bytes, str] | None:
+    """Fallback-read `s3://<bucket>/orb-jobs/<job_id>/<filename>` across warm Lambda containers."""
+    safe_name = Path(filename).name
+    if safe_name not in _ARTIFACT_CONTENT_TYPES:
+        return None
+    cfg = get_aws_s3_config()
+    bucket = cfg["bucket"]
+    if not (bucket and _has_aws_credentials(cfg, s3_client)):
+        return None
+    s3_key = f"orb-jobs/{job_id}/{safe_name}"
+    content_type = _ARTIFACT_CONTENT_TYPES[safe_name]
+    client = s3_client
+    if client is None:
+        try:
+            client = _create_boto3_s3_client(cfg)
+        except Exception:
+            client = None
+    try:
+        if client is not None and hasattr(client, "get_object"):
+            resp = client.get_object(Bucket=bucket, Key=s3_key)
+            return resp["Body"].read(), content_type
+        url = _presign_s3_sigv4_fallback(cfg, s3_key, expires_in=60)
+        if url:
+            with urllib.request.urlopen(url, timeout=4.0) as resp:
+                return resp.read(), content_type
+    except Exception as exc:
+        _LOG.debug("Could not load serverless frame %s for %s: %s", safe_name, job_id, exc)
+    return None
+
+
 def sync_job_artifacts_to_s3(
     job_id: str,
     run_dir: Path | str,
@@ -385,12 +520,7 @@ def sync_job_artifacts_to_s3(
     cfg = get_aws_s3_config()
     bucket = cfg["bucket"]
     region = cfg["region"]
-    has_creds = bool(
-        s3_client is not None
-        or (cfg["access_key"] and cfg["secret_key"])
-        or os.environ.get("AWS_EXECUTION_ENV", "").strip()
-        or os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "").strip()
-    )
+    has_creds = _has_aws_credentials(cfg, s3_client)
 
     # Always write opencv_telemetry.json into run_dir first
     telemetry_file = target_dir / "opencv_telemetry.json"

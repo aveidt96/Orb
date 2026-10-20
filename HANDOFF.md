@@ -1774,4 +1774,18 @@ a temporary process-only model override described below.
   - Verified live upload from `.env` (`ORB_AWS_S3_BUCKET=orb-opencv5-vision-2026`, `AWS_REGION=us-east-1`) via `analyze_image_cv()` + `sync_job_artifacts_to_s3()`: uploaded `orb-jobs/live-smoke-verify/opencv_hud_overlay.jpg`, `orb-jobs/live-smoke-verify/opencv_clahe_enhanced.jpg`, and `orb-jobs/live-smoke-verify/opencv_telemetry.json` (`synced: True`) and verified HTTP `200 OK` (`39,805 bytes`) when fetching the 24-hour pre-signed `hud_s3_url`.
   - `pytest tests/test_opencv_telemetry.py -q` (`5 passed`), `npx vitest run web/opencv-telemetry.test.js` (`2 passed`), rebuilt `web_dist/` (`npm run build`), restarted the local FastAPI server on `http://127.0.0.1:8000`, and committed to `main`.
 
+## 2026-10-20 — Live AWS Lambda (Arm64 Graviton2) Deployment + Serverless S3 Job State Persistence
+
+- **Serverless-Safe Execution & Cross-Container S3 Job Persistence (`prometheus/api/app.py`, `prometheus/storage/aws_s3.py`, `prometheus/api/orb_credits.py`):**
+  - Added `_is_serverless_sync()` (`AWS_LAMBDA_FUNCTION_NAME` or `ORB_SERVERLESS_SYNC=1`) in `prometheus/api/app.py` so `POST /api/orb/{operation}/file`, `POST /api/jobs`, and `POST /api/orb/enhance` execute synchronously before Lambda freezes the CPU, using `/tmp/orb_output` and `/tmp/orb_uploads`.
+  - Added `save_serverless_job_state_to_s3()`, `load_serverless_job_state_from_s3()`, and `load_serverless_frame_from_s3()` in `prometheus/storage/aws_s3.py` so `GET /api/jobs/{job_id}`, `GET /api/jobs/{job_id}/result`, and `GET /api/jobs/{job_id}/frames/{file_path}` fallback-read `s3://orb-opencv5-vision-2026/orb-jobs/<job_id>/job_state.json` and HUD/CLAHE frames seamlessly across warm Lambda containers.
+  - Added HMAC-signed Judge Demo session verification in `prometheus/api/orb_credits.py` so Judge Demo tokens (`?judge=OPENCV2026`) work across stateless Lambda containers.
+- **AWS Graviton2 (`arm64`) Lambda Container & Deployment Kit (`Dockerfile.lambda`, `deploy/deploy_aws_lambda.py`, `.github/workflows/deploy-aws-lambda.yml`):**
+  - Created `Dockerfile.lambda` (`FROM --platform=linux/arm64 python:3.12-slim` with `awslambdaric` + `ffmpeg` + `prometheus.api.app.handler`), `.github/workflows/deploy-aws-lambda.yml`, and `deploy/deploy_aws_lambda.py`.
+  - Provisioned IAM role `orb-opencv5-lambda-role`, deployed `orb-opencv5-api` (`Architectures=["arm64"]`, `Runtime="python3.12"`, `Timeout=120`) in `us-east-1`, and configured its public HTTPS Function URL:
+    **`https://jsnwiqkw5sqs3c7hag6ywd3ngm0vljpc.lambda-url.us-east-1.on.aws/`**
+- **Verification:**
+  - `pytest tests/test_opencv_telemetry.py tests/test_orb_credits.py -q` (`25 passed`).
+
+
 

@@ -14,6 +14,9 @@ from prometheus.performance import timed
 from prometheus.storage.aws_s3 import (
     build_aws_integration_metadata,
     get_aws_s3_config,
+    load_serverless_frame_from_s3,
+    load_serverless_job_state_from_s3,
+    save_serverless_job_state_to_s3,
     sync_job_artifacts_to_s3,
     sync_opencv_artifacts_to_s3,
 )
@@ -121,6 +124,8 @@ __all__ = [
     "RunOutput",
     "build_aws_integration_metadata",
     "get_aws_s3_config",
+    "load_serverless_frame_from_s3",
+    "load_serverless_job_state_from_s3",
     "prepare_run_directory",
     "prepare_scene_directory",
     "save_analysis",
@@ -128,6 +133,7 @@ __all__ = [
     "save_prompt",
     "save_scene_analysis",
     "save_scene_prompt",
+    "save_serverless_job_state_to_s3",
     "sync_job_artifacts_to_s3",
     "sync_opencv_artifacts_to_s3",
 ]

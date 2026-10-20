@@ -210,6 +210,34 @@ class CreditService:
         with self._db() as db:
             row = db.execute("SELECT wallet, expires FROM sessions WHERE token_hash=?",
                              (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+        if row is None and self.config.judge_ready and token.startswith("jg_") and (
+            os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "").strip()
+            or os.environ.get("ORB_SERVERLESS_SYNC", "").strip() == "1"
+        ):
+            parts = token.split("_")
+            if len(parts) == 5:
+                _, wallet_hex, expires_str, rand_hex, sig = parts
+                wallet_cand = f"0x{wallet_hex}".lower()
+                if expires_str.isdigit() and int(expires_str) > time.time() and is_judge_wallet(wallet_cand):
+                    expected_sig = hmac.new(
+                        self.config.judge_demo_code.strip().encode("utf-8"),
+                        f"{wallet_cand}:{expires_str}:{rand_hex}".encode("utf-8"),
+                        hashlib.sha256,
+                    ).hexdigest()[:24]
+                    if hmac.compare_digest(sig, expected_sig):
+                        exp_int = int(expires_str)
+                        with self._db() as db:
+                            db.begin_write()
+                            db.execute(
+                                "INSERT INTO sessions VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                                (hashlib.sha256(token.encode()).hexdigest(), wallet_cand, exp_int),
+                            )
+                            db.execute(
+                                "INSERT INTO balances(wallet, granted, consumed, reserved) VALUES (?, ?, 0, 0) ON CONFLICT DO NOTHING",
+                                (wallet_cand, self.config.judge_session_credits),
+                            )
+                            db.commit()
+                        return wallet_cand
         if row is None or row["expires"] <= time.time():
             raise CreditError("Wallet session expired. Sign again.", 401)
         return row["wallet"]
@@ -278,8 +306,14 @@ class CreditService:
                 )
             credits = min(self.config.judge_session_credits, self.config.judge_daily_cap - used_today)
             wallet = f"{JUDGE_WALLET_PREFIX}{day}{secrets.token_hex(11)}"
-            token = secrets.token_urlsafe(32)
             expires = int(time.time()) + 3600
+            rand_hex = secrets.token_hex(8)
+            sig = hmac.new(
+                expected.encode("utf-8"),
+                f"{wallet}:{expires}:{rand_hex}".encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()[:24]
+            token = f"jg_{wallet[2:]}_{expires}_{rand_hex}_{sig}"
             nonce = f"judge:{day}:{secrets.token_hex(12)}"
             db.execute("INSERT INTO challenges VALUES (?, ?, ?, ?, 1)", (nonce, wallet, ip_marker, expires))
             db.execute("INSERT INTO sessions VALUES (?, ?, ?)",

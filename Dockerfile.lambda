@@ -1,0 +1,28 @@
+# AWS Lambda Arm64 (AWS Graviton2) Container Image for Orb + OpenCV 5.0
+FROM --platform=linux/arm64 python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    ORB_COMPUTE_ENV=AWS \
+    ORB_SERVERLESS_SYNC=1
+
+WORKDIR /var/task
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+       ffmpeg \
+       libglib2.0-0 \
+       curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt awslambdaric
+
+COPY prometheus ./prometheus
+COPY web ./web
+COPY web_dist ./web_dist
+COPY config.yaml ./config.yaml
+
+ENTRYPOINT ["python", "-m", "awslambdaric"]
+CMD ["prometheus.api.app.handler"]
