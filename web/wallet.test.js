@@ -7,7 +7,7 @@ const html = readFileSync(resolve(process.cwd(), "web/index.html"), "utf8");
 const firstAddress = `0x${"11".repeat(20)}`;
 const secondAddress = `0x${"22".repeat(20)}`;
 const sessionKey = "orb-wallet-session";
-const expectedFees = { maxFeePerGas: "0x98", maxPriorityFeePerGas: "0x2" };
+const expectedFees = { gas: "0x1d4c0", maxFeePerGas: "0x98", maxPriorityFeePerGas: "0x2" };
 
 function response(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => body };
@@ -17,7 +17,7 @@ async function flush() {
   for (let index = 0; index < 6; index += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function setup({ account = firstAddress, balanceStatus = 200, revokeError = null, usdg = false, dual = false, paymentError = null, quoteChange = null } = {}) {
+function setup({ account = firstAddress, balanceStatus = 200, revokeError = null, usdg = false, dual = false, paymentError = null, quoteChange = null, judgeEnabled = false, quoteStatus = 200 } = {}) {
   let selectedAccount = account;
   let currentBalanceStatus = balanceStatus;
   let sessionValid = true;
@@ -54,8 +54,9 @@ function setup({ account = firstAddress, balanceStatus = 200, revokeError = null
     if (path === "/api/orb/credits/config") return response(usdg ? { enabled: true, payment_method: "usdg",
       deployment_target: "usdg-staging",
       token_contract: "0xFFC95faa3d63Cde504a05B567C600B78C0b41892", token_decimals: 6, chain_id: 421614 }
-      : { enabled: true, price_wei: "1000" });
+      : { enabled: true, price_wei: "1000", judge_demo_enabled: judgeEnabled });
     if (path === "/api/orb/credits/quotes") {
+      if (quoteStatus !== 200) return response({ detail: "Not Found" }, quoteStatus);
       const receiver = `0x${"33".repeat(20)}`;
       const quote = { quote_id: "usdg-quote", chain_id: 421614, payment_method: "usdg", wallet: selectedAccount,
         token_symbol: "USDG", token_contract: "0xFFC95faa3d63Cde504a05B567C600B78C0b41892", token_decimals: 6,
@@ -112,6 +113,60 @@ function selectCredits(credits) {
 }
 
 describe("Orb wallet authentication UI", () => {
+  it.each([false, true])("handles a wallet-side 404 without resubmitting or granting credits (USDG=%s)", async (usdg) => {
+    const { provider, fetchMock } = setup({ usdg, paymentError: new Error("Request failed with status code 404") });
+    initWallet({ onBalance: vi.fn() });
+    await flush();
+    document.getElementById("wallet-connect").click();
+    await flush();
+    document.getElementById("wallet-buy").click();
+    await flush();
+    expect(document.getElementById("wallet-feedback").textContent).toMatch(/wallet.*service returned 404/i);
+    expect(document.getElementById("wallet-feedback").textContent).toContain("Check wallet activity");
+    expect(document.getElementById("wallet-switch").classList.contains("hidden")).toBe(false);
+    expect(document.getElementById("wallet-switch").textContent).toBe("Register Arbitrum Sepolia");
+    expect(provider.request.mock.calls.filter(([r]) => r.method === "eth_sendTransaction")).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/verify"))).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/orb/judge-session")).toHaveLength(0);
+    expect(sessionStorage.getItem("orb-sepolia-pending-payment")).toBeNull();
+    expect(document.getElementById("wallet-balance").textContent).toContain("2 testnet credits");
+  });
+
+  it("offers existing access-code demo guidance after provider 404 without minting wallet credits", async () => {
+    setup({ judgeEnabled: true, paymentError: new Error("Request failed with status code 404") });
+    initWallet({ onBalance: vi.fn() });
+    await flush(); document.getElementById("wallet-connect").click(); await flush();
+    document.getElementById("wallet-buy").click(); await flush();
+    expect(document.getElementById("wallet-feedback").textContent).toContain("Judge Demo is available with an access code");
+    document.getElementById("header-judge").click();
+    expect(document.getElementById("judge-demo-form").classList.contains("hidden")).toBe(false);
+  });
+
+  it("distinguishes an Orb quote endpoint 404 from a wallet provider 404", async () => {
+    const { provider } = setup({ quoteStatus: 404 });
+    initWallet({ onBalance: vi.fn() });
+    await flush(); document.getElementById("wallet-connect").click(); await flush();
+    document.getElementById("wallet-buy").click(); await flush();
+    expect(document.getElementById("wallet-feedback").textContent).toContain("quote endpoint");
+    expect(provider.request.mock.calls.filter(([r]) => r.method === "eth_sendTransaction")).toHaveLength(0);
+    expect(document.getElementById("wallet-switch").textContent).not.toBe("Register Arbitrum Sepolia");
+  });
+
+  it("registers the exact official RPC on a user-requested network repair, switches, and never resends", async () => {
+    const { provider } = setup({ paymentError: new Error("Request failed with status code 404") });
+    const original = provider.request.getMockImplementation();
+    provider.request.mockImplementation((request) => ["wallet_addEthereumChain", "wallet_switchEthereumChain"].includes(request.method)
+      ? Promise.resolve(null) : original(request));
+    initWallet({ onBalance: vi.fn() });
+    await flush(); document.getElementById("wallet-connect").click(); await flush();
+    document.getElementById("wallet-buy").click(); await flush();
+    document.getElementById("wallet-switch").click(); await flush();
+    expect(provider.request).toHaveBeenCalledWith({ method: "wallet_addEthereumChain", params: [{ chainId: "0x66eee",
+      chainName: "Arbitrum Sepolia", nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
+      rpcUrls: ["https://sepolia-rollup.arbitrum.io/rpc"], blockExplorerUrls: ["https://sepolia.arbiscan.io"] }] });
+    expect(provider.request).toHaveBeenCalledWith({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x66eee" }] });
+    expect(provider.request.mock.calls.filter(([r]) => r.method === "eth_sendTransaction")).toHaveLength(1);
+  });
   beforeEach(() => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     sessionStorage.clear();
@@ -715,13 +770,13 @@ describe("Orb wallet authentication UI", () => {
     expect(transactions[1][0].params[0].maxFeePerGas).toBe("0x12e");
     for (const [request] of transactions) {
       expect(request.params[0]).not.toHaveProperty("gasPrice");
-      expect(request.params[0]).not.toHaveProperty("gas");
+      expect(request.params[0].gas).toBe("0x1d4c0");
       expect(request.params[0]).not.toHaveProperty("nonce");
     }
     const estimates = provider.request.mock.calls.filter(([request]) => request.method === "eth_estimateGas");
     expect(estimates).toHaveLength(2);
     for (const [index, [request]] of estimates.entries()) {
-      const { maxFeePerGas, maxPriorityFeePerGas, ...exact } = transactions[index][0].params[0];
+      const { gas, maxFeePerGas, maxPriorityFeePerGas, ...exact } = transactions[index][0].params[0];
       expect(request.params).toEqual([exact]);
     }
     expect(fetchMock.mock.calls.filter(([path]) => path.endsWith("/verify"))).toHaveLength(2);

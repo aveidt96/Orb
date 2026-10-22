@@ -221,6 +221,13 @@ def test_canonical_dedup_preserves_bytes_order_and_nearby_seeks(tmp_path, monkey
 
 @pytest.mark.parametrize("fixture,frame_count", [("synthetic_video", 8), ("cut_video", 8), ("cut_video", 4)])
 def test_real_frames_and_provider_prompts_match_serial_evidence(tmp_path, request, monkeypatch, fixture, frame_count):
+    from types import SimpleNamespace
+    # Compare concurrency with the SAME grounding input on both paths. OpenCV
+    # integration has its own tests; its addition must not make this baseline
+    # compare an ungrounded prompt to a grounded one.
+    grounding = "Controlled OpenCV grounding for evidence-equivalence test"
+    monkeypatch.setattr("prometheus.pipeline.analyze_video_cv", lambda *args, **kwargs:
+                        SimpleNamespace(cv_grounding_brief=grounding, to_dict=lambda: {"test_grounding": grounding}))
     source = request.getfixturevalue(fixture)
     video = probe_video(source)
     config = PrometheusConfig()
@@ -230,6 +237,7 @@ def test_real_frames_and_provider_prompts_match_serial_evidence(tmp_path, reques
     scenes = pipeline.segmenter.segment(video)
     original = sequential_scenes(pipeline, video, scenes, tmp_path / "serial")
     original_frames = pipeline.sampler.sample(video, tmp_path / "serial_global")
+    setattr(video, "_cv_grounding_brief", grounding)
     analyzer.analyze(video, original_frames, original)
     baseline_input, baseline_global = analyzer.inputs, analyzer.global_input
     optimized = RecordingAnalyzer(delay=0)
@@ -239,6 +247,7 @@ def test_real_frames_and_provider_prompts_match_serial_evidence(tmp_path, reques
     with perf.bind(trace):
         result = pipeline.run(source, validated_video=ValidatedVideo(video, video_identity(source)))
     assert optimized.inputs == baseline_input and optimized.global_input == baseline_global
+    assert grounding in optimized.global_input[0]
     assert result.report.scenes == original
     assert [f.timestamp for f in result.frames] == [f.timestamp for f in original_frames]
     expected_hits = 4 if fixture == "cut_video" and frame_count == 4 else 0

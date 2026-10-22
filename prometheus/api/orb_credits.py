@@ -18,6 +18,7 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -30,6 +31,7 @@ from eth_keys.exceptions import BadSignature
 from eth_utils import is_address, to_checksum_address
 
 from prometheus.api.orb_database import OrbDatabase
+from prometheus.api.orb_s3_ledger import S3LedgerDatabase, LedgerUnavailable, LedgerConflict, retry_ledger_conflicts
 from prometheus.api.orb_usdg import USDG_CONTRACT, USDG_DECIMALS, USDG_PRICE, matching_transfer, transfer_data
 
 
@@ -201,10 +203,20 @@ class CreditService:
     def __init__(self, config: CreditConfig, rpc: RpcClient | None = None):
         self.config = config
         self.rpc = rpc or RpcClient(config.rpc_url)
-        self.database = OrbDatabase(config.database, config.database_url, usdg_staging="usdg" in config.methods)
+        if is_serverless_runtime() and not config.database_url:
+            self.database = S3LedgerDatabase(os.environ.get("ORB_AWS_S3_BUCKET", ""), usdg="usdg" in config.methods)
+        else:
+            self.database = OrbDatabase(config.database, config.database_url, usdg_staging="usdg" in config.methods)
 
+    @contextmanager
     def _db(self):
-        return self.database.session()
+        try:
+            with self.database.session() as db:
+                yield db
+        except LedgerConflict:
+            raise
+        except LedgerUnavailable as exc:
+            raise CreditError(str(exc), 503) from None
 
     def _lock(self) -> str:
         return " FOR UPDATE" if self.database.postgres else ""
@@ -213,6 +225,7 @@ class CreditService:
         if not self.config.ready:
             raise CreditError("Arbitrum Sepolia testnet credits are not configured.", 503)
 
+    @retry_ledger_conflicts
     def challenge(self, address: str, origin: str | None, request_hosts: tuple[str, ...] = ()) -> dict:
         self._require_ready()
         self._check_origin(origin, request_hosts)
@@ -247,6 +260,7 @@ class CreditService:
 
     create_challenge = challenge
 
+    @retry_ledger_conflicts
     def sign_in(self, nonce: str, signature: str, origin: str | None,
                 request_hosts: tuple[str, ...] = ()) -> dict:
         self._require_ready()
@@ -258,7 +272,8 @@ class CreditService:
             db.begin_write()
             row = db.execute("SELECT * FROM challenges WHERE nonce=?" + self._lock(), (nonce,)).fetchone()
             if row is None:
-                stateless = self._decode_stateless_challenge(nonce)
+                stateless = (self._decode_stateless_challenge(nonce)
+                             if not self.database.postgres and not getattr(self.database, "s3", False) else None)
                 if stateless is not None:
                     db.execute("INSERT INTO challenges VALUES (?, ?, ?, ?, 0)",
                                (nonce, stateless["w"], stateless["m"], stateless["e"]))
@@ -294,7 +309,7 @@ class CreditService:
         with self._db() as db:
             row = db.execute("SELECT wallet, expires FROM sessions WHERE token_hash=?",
                              (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
-        if row is None and is_serverless_runtime():
+        if row is None and is_serverless_runtime() and not self.database.postgres and not getattr(self.database, "s3", False):
             restored = self._restore_stateless_session(token)
             if restored is not None:
                 return restored
@@ -302,6 +317,7 @@ class CreditService:
             raise CreditError("Wallet session expired. Sign again.", 401)
         return row["wallet"]
 
+    @retry_ledger_conflicts
     def logout(self, authorization: str | None) -> None:
         """Revoke this signed Orb session without changing credits or wallet permissions."""
         wallet = self.authenticate(authorization)
@@ -404,6 +420,7 @@ class CreditService:
                     return
         raise CreditError("Wallet request origin is not trusted.", 403)
 
+    @retry_ledger_conflicts
     def create_judge_session(self, code: str, client_ip: str, origin: str | None = None,
                              request_hosts: tuple[str, ...] = ()) -> dict:
         if not self.config.judge_ready:
@@ -479,6 +496,7 @@ class CreditService:
             result["judge_demo"] = True
         return result
 
+    @retry_ledger_conflicts
     def create_quote(self, wallet: str, credits: int, payment_method: str | None = None) -> dict:
         if is_judge_wallet(wallet):
             raise CreditError("Judge Demo sessions cannot purchase testnet credits.", 403)
@@ -529,6 +547,7 @@ class CreditService:
                 "to": to_checksum_address(self.config.receiver), "value_wei": str(amount),
                 "data": tx_data, "credits": credits, "expires_at": expires}
 
+    @retry_ledger_conflicts
     def verify_purchase(self, wallet: str, quote_id: str, tx_hash: str) -> dict:
         if is_judge_wallet(wallet):
             raise CreditError("Judge Demo sessions cannot purchase testnet credits.", 403)
@@ -632,6 +651,7 @@ class CreditService:
             db.commit()
         return {"status": "credited", "credits": quote["credits"], "balance": self.balance(wallet)}
 
+    @retry_ledger_conflicts
     def reserve(self, wallet: str, operation: str, key: str, fingerprint: str, job_id: str) -> tuple[str, bool]:
         if not isinstance(key, str) or not IDEMPOTENCY_RE.fullmatch(key):
             raise CreditError("A valid idempotency key is required.", 400)
@@ -666,6 +686,7 @@ class CreditService:
             db.commit()
         return job_id, True
 
+    @retry_ledger_conflicts
     def settle(self, job_id: str, success: bool) -> None:
         with self._db() as db:
             db.begin_write()
@@ -683,11 +704,13 @@ class CreditService:
         with self._db() as db:
             return db.execute("SELECT wallet, operation, status FROM reservations WHERE job_id=?", (job_id,)).fetchone()
 
+    @retry_ledger_conflicts
     def save_result(self, job_id: str, payload: dict, run_dir: Path) -> None:
         """Persist the full deliverable result before finalizing a reserved credit."""
-        if self.database.postgres:
+        if self.database.postgres or getattr(self.database, "s3", False):
             with self._db() as db:
-                db.execute("INSERT INTO results(job_id, payload, created_at) VALUES (?, ?::jsonb, ?)",
+                sql = "INSERT INTO results(job_id, payload, created_at) VALUES (?, ?::jsonb, ?)" if self.database.postgres else "INSERT INTO results(job_id, payload, created_at) VALUES (?, ?, ?) ON CONFLICT(job_id) DO NOTHING"
+                db.execute(sql,
                            (job_id, json.dumps(payload, ensure_ascii=False), int(time.time())))
             return
         destination = run_dir / "orb_result.json"
@@ -708,7 +731,7 @@ class CreditService:
             temporary.unlink(missing_ok=True)
 
     def result(self, job_id: str, output_root: Path) -> dict | None:
-        if self.database.postgres:
+        if self.database.postgres or getattr(self.database, "s3", False):
             with self._db() as db:
                 row = db.execute("SELECT payload FROM results WHERE job_id=?", (job_id,)).fetchone()
             if row is None:
@@ -721,6 +744,10 @@ class CreditService:
             return None
 
     def reconcile(self, output_root: Path) -> None:
+        if is_serverless_runtime():
+            # A new Lambda container must never release another container's
+            # active reservation. Durable reservations remain authoritative.
+            return
         # Only a complete, durable result consumes a reserved credit after a
         # restart. Production reads it from Postgres; local mode reads disk.
         with self._db() as db:

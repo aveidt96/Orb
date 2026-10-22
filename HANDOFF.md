@@ -1811,6 +1811,58 @@ a temporary process-only model override described below.
     - Lambda URL direct: Challenge `200` (`sc.`), Sign-in `200` (`ws_`), 5/5 Balance checks `200 OK`.
     - `https://evil.example`: Correctly rejected with `403 {'detail': 'Wallet request origin is not trusted.'}`.
 
+## 2026-10-22 - Wallet-provider 404 and Lambda durable credit ledger
 
+- User authorized investigating live purchases, fixing wallet compatibility and
+  persistent Lambda credits, rebuilding, redeploying the existing Lambda and
+  pushing main (and main:dev only if dev already exists). Remote dev was absent.
+- Live Vercel bundle points to Render. Both Render and Lambda quote/verification
+  paths return 401 to unauthenticated probes, not 404. Lambda currently had no
+  Postgres URL or S3 ledger; container-local quotes/balances could disappear.
+- Wallet implementation is web/wallet.js, not app.js. Added explicit dynamic gas
+  (100k minimum, 20% above exact estimate), official chain-checked read-only fee
+  RPC fallback for extension 404s, explicit network registration/selection and
+  clear wallet-vs-backend errors. No automatic resend or unverified credit grant.
+  Existing code-gated Judge Demo remains the fallback.
+- Added authoritative encrypted S3 ledger snapshots with conditional ETag writes,
+  global tx/quote uniqueness, bounded conflict retries, durable sessions, quotes,
+  balances, reservations and result JSON. No token-encoded balances or unsafe
+  independent wallet backups. Missing/unavailable storage fails closed.
+- Lambda cold starts no longer release other invocations' reservations. S3 logout
+  cannot resurrect a deleted session. Existing local SQLite and Postgres remain.
+- Deployment preserves existing env, keys, role, package type, memory and URL;
+  refuses deleting/recreating Lambda to change packaging; includes boto3/psycopg.
+  Existing private bucket has all four S3 public-access blocks enabled, no public
+  bucket policy and no versioning. No permission change performed.
+- See docs/LAMBDA_CREDIT_PERSISTENCE.md for persistence guarantees, historical
+  Lambda /tmp recovery limits, reservation handling and separate Render balances.
+- Initial validation hit Windows worker startup/timeouts; new S3 tests and the
+  existing short-wait paid API test passed focused reruns. Results follow below.
 
+- Final validation: frontend 231 passed (one worker, 15-second test-runner
+  allowance for Windows startup). Guarded build and npm run build passed.
+- Backend full rerun: 336 passed, 8 expected Postgres skips, one whole-pipeline
+  wall-clock benchmark failed under local I/O/scheduling noise. Its scene-AI
+  timing assertion passed, and the unchanged benchmark passed isolated. The
+  additional cross-container HTTP result/auth/logout test also passed.
+- Updated stale OpenCV result expectations, controlled identical CV grounding
+  on both evidence-equivalence paths, and synchronized scratch cleanup checks.
+  No production AI/video pipeline changes. Credit/S3 subset: 32 passed.
+- Existing Lambda Zip was downloaded and checksum-verified to ignored
+  output/lambda-rollback/. Its expanded size is 215.4 MiB. Packaging retains
+  S3/STS models and metadata, prunes unused AWS models, and enforces a 250 MiB
+  expanded limit. Official fee RPC returned chain 0x66eee and browser CORS.
 
+- AWS rollout completed: existing orb-opencv5-api Zip/arm64 function remains
+  512 MB / 120 seconds, same Function URL and primary origins. Package size
+  234.5 MiB expanded / 79.3 MB compressed. Code SHA256:
+  W37XTpbxrKdKbrcrAqH7zPbqvo/rdPn24QvQCgm6dIA=
+- Live /api/health and /api/ready returned 200; credit config returned enabled
+  true, chain 421614, ledger_storage=s3 and exact Vercel CORS. Two concurrent
+  unsigned challenges persisted in the AES256-encrypted shared 90,112-byte
+  ledger. No sessions, balances, purchases or reservations were created by
+  these probes; no real wallet transaction or live AI call was submitted.
+- Verified Vercel main auto-deployment is enabled. Push will update frontend
+  using its unchanged Render API environment. Commit markers skip Render and
+  a duplicate AWS deployment, preserving the manually verified Lambda rollout.
+  Remote main is an ancestor of local main; remote dev remains absent.

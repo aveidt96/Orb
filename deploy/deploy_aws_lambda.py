@@ -34,6 +34,8 @@ import boto3  # type: ignore[import-not-found]
 from botocore.exceptions import ClientError  # type: ignore[import-not-found]
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 FUNCTION_NAME = "orb-opencv5-api"
 ECR_REPO_NAME = "orb-opencv5-api"
 IAM_ROLE_NAME = "orb-opencv5-lambda-role"
@@ -198,6 +200,8 @@ def build_and_upload_arm64_zip(session: boto3.Session, bucket: str) -> str:
         wheels_dir.mkdir(parents=True, exist_ok=True)
 
         packages = [
+            "boto3>=1.35.76",
+            "psycopg[binary]>=3.2,<4",
             "pyyaml>=6.0",
             "fastapi>=0.115",
             "mangum>=0.19.0",
@@ -256,7 +260,25 @@ def build_and_upload_arm64_zip(session: boto3.Session, bucket: str) -> str:
         for pattern in ("__pycache__",):
             for p in list(pkg_dir.rglob(pattern)):
                 if p.is_dir() and "prometheus" not in p.parts:
+                    if not p.resolve().is_relative_to(pkg_dir.resolve()):
+                        raise RuntimeError("Cache path escaped the package directory.")
                     shutil.rmtree(p, ignore_errors=True)
+
+        # The Function uses only S3 (and STS credential resolution). Exclude
+        # unrelated botocore service models, not code or package metadata, to
+        # stay below Lambda's 250 MiB uncompressed Zip limit with native CV libs.
+        models = pkg_dir / "botocore" / "data"
+        if models.is_dir():
+            for service in models.iterdir():
+                if service.is_dir() and service.name not in {"s3", "sts"}:
+                    resolved = service.resolve()
+                    if not resolved.is_relative_to(pkg_dir.resolve()):
+                        raise RuntimeError("SDK model path escaped the package directory.")
+                    shutil.rmtree(resolved)
+        expanded_bytes = sum(p.stat().st_size for p in pkg_dir.rglob("*") if p.is_file())
+        if expanded_bytes >= 250 * 1024 * 1024:
+            raise RuntimeError("Lambda package exceeds the uncompressed Zip limit; deployment was not attempted.")
+        print(f"[Packager] Uncompressed size: {expanded_bytes / 1024**2:.1f} MiB (limit: 250 MiB)")
 
         zip_path = tmp / "orb-opencv5-api-arm64.zip"
         print("[Packager] Compressing Arm64 Lambda bundle...")
@@ -293,23 +315,26 @@ def existing_lambda_env(lambda_client: Any) -> dict[str, str]:
     try:
         cfg = lambda_client.get_function_configuration(FunctionName=FUNCTION_NAME)
         return dict((cfg.get("Environment") or {}).get("Variables") or {})
-    except ClientError:
-        return {}
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ResourceNotFoundException":
+            return {}
+        raise
 
 
 def lambda_env_vars(bucket: str, existing: dict[str, str] | None = None) -> dict[str, str]:
     existing = existing or {}
     session_secret = (
-        os.environ.get("ORB_SESSION_SECRET", "").strip()
-        or existing.get("ORB_SESSION_SECRET", "").strip()
+        existing.get("ORB_SESSION_SECRET", "").strip()
+        or os.environ.get("ORB_SESSION_SECRET", "").strip()
         or secrets.token_urlsafe(48)
     )
     gemini_key = (
-        os.environ.get("GEMINI_API_KEY", "").strip()
+        existing.get("GEMINI_API_KEY", "").strip()
+        or os.environ.get("GEMINI_API_KEY", "").strip()
         or os.environ.get("GOOGLE_API_KEY", "").strip()
         or os.environ.get("PROMETHEUS_API_KEY", "").strip()
     )
-    variables = {
+    defaults = {
         "ORB_ENV": "local",
         "ORB_COMPUTE_ENV": "AWS",
         "ORB_SERVERLESS_SYNC": "1",
@@ -333,6 +358,10 @@ def lambda_env_vars(bucket: str, existing: dict[str, str] | None = None) -> dict
         "ORB_AI_PROVIDER": "gemini",
         "ORB_AI_MODEL": os.environ.get("ORB_AI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash",
     }
+    # A code redeploy must not drop USDG, prices, receiver, DB, or other existing
+    # runtime settings. Existing deployment config takes precedence over .env.
+    variables = {**defaults, **existing}
+    variables["ORB_SESSION_SECRET"] = session_secret
     if gemini_key:
         variables["GEMINI_API_KEY"] = gemini_key
     return variables
@@ -395,10 +424,20 @@ def deploy(mode: str = "auto", skip_upload: bool = False) -> str:
     )
     print(f"[AWS] Authenticated as Account {account_id} in {region} (S3 bucket: {bucket})")
 
-    iam = session.client("iam")
-    role_arn = ensure_lambda_role(iam)
     lambda_client = session.client("lambda")
+    try:
+        current = lambda_client.get_function_configuration(FunctionName=FUNCTION_NAME)
+        role_arn = current["Role"]
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ResourceNotFoundException":
+            raise
+        role_arn = ensure_lambda_role(session.client("iam"))
     env_vars = lambda_env_vars(bucket, existing_lambda_env(lambda_client))
+    if not env_vars.get("ORB_DATABASE_URL"):
+        from prometheus.api.orb_s3_ledger import S3LedgerDatabase
+        ledger = S3LedgerDatabase(env_vars["ORB_AWS_S3_BUCKET"], session.client("s3"))
+        created = ledger.bootstrap()
+        print("[Ledger] Durable S3 ledger initialized." if created else "[Ledger] Existing durable S3 ledger preserved.")
 
     use_image = mode == "image" or (mode == "auto" and docker_available())
 
@@ -412,17 +451,16 @@ def deploy(mode: str = "auto", skip_upload: bool = False) -> str:
         if exc.response["Error"]["Code"] != "ResourceNotFoundException":
             raise
 
+    if mode == "auto" and exists:
+        use_image = existing_pkg_type == "Image"
     if exists and (
         (use_image and existing_pkg_type != "Image")
         or (not use_image and existing_pkg_type != "Zip")
     ):
-        print(f"[Lambda] Replacing {existing_pkg_type} function with {'Image' if use_image else 'Zip'}...")
-        lambda_client.delete_function(FunctionName=FUNCTION_NAME)
-        time.sleep(3)
-        exists = False
+        raise RuntimeError("Refusing to delete/recreate the live Lambda to change package type. Use --mode auto or its existing package type.")
 
     def _call_with_memory_fallback(fn, **kwargs):
-        for mem in (3008, 1024, 512):
+        for mem in ((current["MemorySize"],) if exists else (3008, 1024, 512)):
             try:
                 return fn(MemorySize=mem, **kwargs)
             except ClientError as exc:
@@ -509,7 +547,8 @@ def deploy(mode: str = "auto", skip_upload: bool = False) -> str:
             )
 
     wait_until_lambda_ready(lambda_client, FUNCTION_NAME)
-    fn_url = ensure_function_url(lambda_client, FUNCTION_NAME)
+    fn_url = (lambda_client.get_function_url_config(FunctionName=FUNCTION_NAME)["FunctionUrl"]
+              if exists else ensure_function_url(lambda_client, FUNCTION_NAME))
     print("\n============================================================")
     print(f"LIVE AWS GRAVITON2 (ARM64) LAMBDA FUNCTION URL:\n{fn_url}")
     print("============================================================")

@@ -282,7 +282,7 @@ def create_app(
     ).strip()
     credit_service = orb_credit_service or CreditService(CreditConfig(
         database=credit_db,
-        database_url=database_url if public_mode else "",
+        database_url=database_url if public_mode or _is_serverless_sync() else "",
         public_origin=",".join(split_origins(os.environ.get("ORB_PUBLIC_ORIGIN", ""))),
         allowed_origins=split_origins(os.environ.get("ORB_ALLOWED_ORIGINS", "")),
         allowed_origin_patterns=split_origins(os.environ.get("ORB_ALLOWED_ORIGIN_PATTERNS", "")),
@@ -662,7 +662,9 @@ def create_app(
                 "treasury_address": treasury,
                 "price_wei": str(credit_service.config.price_wei),
                 "credit_options": [1, 3, 5], "confirmations": credit_service.config.confirmations,
-                "judge_demo_enabled": credit_service.config.judge_ready}
+                "judge_demo_enabled": credit_service.config.judge_ready,
+                "ledger_storage": ("postgres" if credit_service.database.postgres else
+                                   "s3" if getattr(credit_service.database, "s3", False) else "sqlite")}
         methods = {"native_eth": {"enabled": "native_eth" in credit_service.config.methods,
                                   "symbol": "ETH", "decimals": 18, "price_wei": str(credit_service.config.price_wei)},
                    "usdg": {"enabled": "usdg" in credit_service.config.methods}}
@@ -717,7 +719,10 @@ def create_app(
 
     @app.get("/api/orb/credits/balance")
     def orb_credit_balance(request: Request) -> dict:
-        return credit_service.balance(_wallet(request))
+        try:
+            return credit_service.balance(_wallet(request))
+        except CreditError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
     @app.post("/api/orb/credits/quotes")
     def orb_credit_quote(request: Request, payload: dict) -> dict:

@@ -129,6 +129,10 @@ def test_api_image_and_enhance_timings_do_not_change_results(tmp_path, monkeypat
     assert result["prompt"] == "private-result-sentinel"
     expected = {"job_id", "operation", "prompt", "provider"}
     expected |= {"original_prompt", "output", "style", "detail"} if operation == "enhance" else {"image", "visual_analysis", "refinements", "notice"}
+    if operation != "enhance":
+        expected.add("opencv_telemetry")
+        assert result["opencv_telemetry"]["media_kind"] == "image"
+        assert result["opencv_telemetry"]["opencv_version"]
     assert set(result) == expected
     event = summary(caplog, job_id)
     assert event["operation"] == ("enhance" if operation == "enhance" else operation + "_image")

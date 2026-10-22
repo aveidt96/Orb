@@ -319,6 +319,11 @@ def test_mocked_production_api_result_recovers_without_local_files(monkeypatch, 
         assert result["prompt"] == "A blue reference image"
         assert "preview_url" not in result["image"]
         assert service.balance(wallet.address.lower())["consumed"] == 1
+        # Completion makes the durable result available before the worker's
+        # finally block removes scratch artifacts. Wait for that cleanup too.
+        cleanup_deadline = time.monotonic() + 5
+        while (scratch / job_id).exists() and time.monotonic() < cleanup_deadline:
+            time.sleep(.01)
         assert not (scratch / job_id).exists()
 
     restarted = CreditService(replace(service.config, database_url=""), chain)

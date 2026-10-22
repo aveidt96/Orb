@@ -1,10 +1,13 @@
 "use strict";
 
 import { apiUrl } from "./api-url.js";
-import { estimatePaymentFees } from "./payment-fees.js";
+import { estimatePaymentFees, isWalletService404 as provider404 } from "./payment-fees.js";
 
 const CHAIN_ID = 421614;
 const CHAIN_HEX = `0x${CHAIN_ID.toString(16)}`;
+const SEPOLIA_NETWORK = { chainId: CHAIN_HEX, chainName: "Arbitrum Sepolia",
+  nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: ["https://sepolia-rollup.arbitrum.io/rpc"], blockExplorerUrls: ["https://sepolia.arbiscan.io"] };
 const PENDING_KEY = "orb-sepolia-pending-payment";
 const SESSION_KEY = "orb-wallet-session";
 const DISCONNECTED_KEY = "orb-wallet-disconnected";
@@ -55,6 +58,7 @@ export function initWallet({ onBalance }) {
   let verifyTimer = null;
   let sessionTimer = null;
   let authEpoch = 0;
+  let networkRepairNeeded = false;
 
   async function json(path, options = {}) {
     const response = await fetch(apiUrl(path), options);
@@ -176,18 +180,20 @@ export function initWallet({ onBalance }) {
     return correct;
   }
 
-  async function switchNetwork() {
+  async function switchNetwork(register = false) {
     if (!window.ethereum?.request) throw new Error("An Arbitrum-compatible wallet is required.");
+    if (register) await window.ethereum.request({ method: "wallet_addEthereumChain", params: [SEPOLIA_NETWORK] });
     try {
       await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_HEX }] });
     } catch (error) {
-      if (error?.code !== 4902) throw error;
-      await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{ chainId: CHAIN_HEX,
-        chainName: "Arbitrum Sepolia", nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
-        rpcUrls: ["https://sepolia-rollup.arbitrum.io/rpc"],
-        blockExplorerUrls: ["https://sepolia.arbiscan.io"] }] });
+      if (error?.code === 4001 || (error?.code !== 4902 && !provider404(error))) throw error;
+      if (register) throw error;
+      await window.ethereum.request({ method: "wallet_addEthereumChain", params: [SEPOLIA_NETWORK] });
+      // Adding a chain does not imply selecting it (EIP-3085).
+      await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_HEX }] });
     }
     if (!await network()) throw new Error("Switch your wallet to Arbitrum Sepolia before continuing.");
+    networkRepairNeeded = false;
   }
 
   async function refresh() {
@@ -638,6 +644,7 @@ export function initWallet({ onBalance }) {
     const methodConfig = paymentMethods[payingMethod];
     let epoch = authEpoch;
     let submissionStarted = false;
+    let paymentStage = "network";
     busy = true;
     update();
     try {
@@ -646,6 +653,7 @@ export function initWallet({ onBalance }) {
         throw new Error("Wallet changed. Sign again before buying credits.");
       }
       epoch = authEpoch;
+      paymentStage = "quote";
       const quote = await json("/api/orb/credits/quotes", { method: "POST",
         headers: { "Content-Type": "application/json", ...headers() },
         body: JSON.stringify({ credits: Number(creditCount()), payment_method: payingMethod }) });
@@ -680,11 +688,13 @@ export function initWallet({ onBalance }) {
         }
       };
       setFeedback("Estimating current network fees…");
+      paymentStage = "fees";
       const fees = await estimatePaymentFees(provider, transaction, assertActive);
       assertActive();
       setFeedback("Confirm the Arbitrum Sepolia testnet transfer in your wallet…");
       // Exactly one send per user attempt. Never automatically resend on error.
       submissionStarted = true;
+      paymentStage = "submission";
       const txHash = await provider.request({ method: "eth_sendTransaction", params: [{ ...transaction, ...fees }] });
       if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) throw new Error("Wallet did not return a valid transaction hash.");
       // Remember a submitted transfer even if the account changes while the
@@ -696,7 +706,16 @@ export function initWallet({ onBalance }) {
       console.warn("[Orb payment attempt]", error?.code, error?.message, error?.cause?.message, error?.data?.message);
       const feeError = [error?.message, error?.cause?.message, error?.data?.message, error?.data?.originalError?.message]
         .filter((message) => typeof message === "string").join(" ");
-      if (/(?:max\s*fee\s*per\s*gas|maxFeePerGas).*(?:base\s*fee|baseFee)/i.test(feeError)) {
+      if (error?.code !== 4001 && provider404(error) && paymentStage !== "quote") {
+        networkRepairNeeded = true;
+        switchButton.textContent = "Register Arbitrum Sepolia";
+        switchButton.classList.remove("hidden");
+        setFeedback("Your wallet's Arbitrum Sepolia service returned 404. Use “Register Arbitrum Sepolia” to register the official RPC, or try another compatible wallet. "
+          + (submissionStarted ? "Check wallet activity before retrying; Orb received no transaction hash. " : "No transaction was submitted. ")
+          + (config?.judge_demo_enabled ? "Judge Demo is available with an access code; it does not grant purchased wallet credits." : "No credits were granted."));
+      } else if (error?.status === 404 && paymentStage === "quote") {
+        setFeedback("Orb's payment service could not find the quote endpoint. Try again later. No transaction was submitted.");
+      } else if (/(?:max\s*fee\s*per\s*gas|maxFeePerGas).*(?:base\s*fee|baseFee)/i.test(feeError)) {
         setFeedback("Your wallet's fee estimate was below Arbitrum Sepolia's current base fee. Check your wallet activity before retrying Buy Credits. Orb did not receive a transaction hash.");
       } else if (error?.code === 4001) setFeedback("Payment cancelled in your wallet. No new credits were charged.");
       else if (payingMethod === "usdg" && /insufficient|exceeds balance|transfer amount exceeds/i.test(feeError)
@@ -797,7 +816,7 @@ export function initWallet({ onBalance }) {
   });
   disconnectButton.addEventListener("click", () => void disconnect());
   switchButton.addEventListener("click", async () => {
-    try { await switchNetwork(); setFeedback("Arbitrum Sepolia selected. Connect and sign to continue."); }
+    try { await switchNetwork(networkRepairNeeded); switchButton.textContent = "Switch to Arbitrum Sepolia"; setFeedback("Arbitrum Sepolia selected. Connect and sign to continue."); }
     catch (error) { setFeedback(error.message || "Network switch cancelled."); }
   });
   buyButton.addEventListener("click", () => void buy());

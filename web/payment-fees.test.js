@@ -21,14 +21,52 @@ function provider(overrides = {}) {
 
 describe("fresh Arbitrum Sepolia EIP-1559 estimation", () => {
   beforeEach(() => vi.spyOn(console, "warn").mockImplementation(() => {}));
-  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it.each([native, usdg])("uses the official chain-checked RPC only when wallet fee estimation returns 404", async (transaction) => {
+    const fetchRpc = vi.fn(async (url, options) => {
+      expect(url).toBe("https://sepolia-rollup.arbitrum.io/rpc");
+      const { method, params } = JSON.parse(options.body);
+      if (method === "eth_estimateGas") expect(params).toEqual([transaction]);
+      return { ok: true, json: async () => ({ jsonrpc: "2.0", id: 1,
+        result: method === "eth_chainId" ? "0x66eee" : "0x186a0" }) };
+    });
+    vi.stubGlobal("fetch", fetchRpc);
+    const rpc = provider({ eth_estimateGas: () => { throw new Error("Request failed with status code 404"); } });
+    expect((await estimatePaymentFees(rpc, transaction)).gas).toBe("0x1d4c0");
+    expect(fetchRpc).toHaveBeenCalledTimes(2);
+    expect(rpc.request.mock.calls.some(([r]) => r.method === "eth_sendTransaction")).toBe(false);
+  });
+
+  it("rejects a wrong-chain fallback RPC without sending any transaction", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ jsonrpc: "2.0", id: 1, result: "0x1" }) })));
+    await expect(estimatePaymentFees(provider({ eth_estimateGas: () => { throw new Error("HTTP 404"); } }), native))
+      .rejects.toThrow(FEE_ESTIMATE_ERROR);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not contact the fallback RPC after wallet rejection or a genuine execution revert", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    for (const error of [Object.assign(new Error("HTTP 404"), { code: 4001 }), new Error("execution reverted")]) {
+      await expect(estimatePaymentFees(provider({ eth_estimateGas: () => { throw error; } }), native)).rejects.toThrow();
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
   it("uses the current base and priority suggestion with 50% base headroom", async () => {
     const rpc = provider();
-    expect(await estimatePaymentFees(rpc, native)).toEqual({ maxFeePerGas: "0x98", maxPriorityFeePerGas: "0x2" });
+    expect(await estimatePaymentFees(rpc, native)).toEqual({ gas: "0x1d4c0", maxFeePerGas: "0x98", maxPriorityFeePerGas: "0x2" });
     expect(rpc.request.mock.calls.filter(([arg]) => arg.method === "eth_getBlockByNumber"))
       .toEqual([[{ method: "eth_getBlockByNumber", params: ["pending", false] }],
         [{ method: "eth_getBlockByNumber", params: ["pending", false] }]]);
+  });
+
+  it.each([["0x5208", 100000n], ["0x186a0", 120000n], ["0x493e0", 360000n]])
+  ("supplies a clean hex gas limit from %s without imposing a 100k cap", async (estimate, expected) => {
+    const fees = await estimatePaymentFees(provider({ eth_estimateGas: estimate }), usdg);
+    expect(fees.gas).toBe(`0x${expected.toString(16)}`);
+    expect(fees).not.toHaveProperty("gasPrice");
+    expect(fees).not.toHaveProperty("nonce");
   });
 
   it.each([1n, 31140000n, 90071992547409930001n])("keeps integer headroom above base %s, including beyond Number precision", async (base) => {
@@ -47,7 +85,7 @@ describe("fresh Arbitrum Sepolia EIP-1559 estimation", () => {
     const rpc = provider({ eth_getBlockByNumber: () => ({ baseFeePerGas: base }), eth_maxPriorityFeePerGas: () => tip });
     expect((await estimatePaymentFees(rpc, native)).maxFeePerGas).toBe("0x98");
     base = "0xc8"; tip = "0x4";
-    expect(await estimatePaymentFees(rpc, native)).toEqual({ maxFeePerGas: "0x130", maxPriorityFeePerGas: "0x4" });
+    expect(await estimatePaymentFees(rpc, native)).toEqual({ gas: "0x1d4c0", maxFeePerGas: "0x130", maxPriorityFeePerGas: "0x4" });
     expect(rpc.request.mock.calls.filter(([arg]) => arg.method === "eth_maxPriorityFeePerGas")).toHaveLength(2);
     expect(rpc.request.mock.calls.filter(([arg]) => arg.method === "eth_estimateGas")).toHaveLength(2);
   });
@@ -75,7 +113,7 @@ describe("fresh Arbitrum Sepolia EIP-1559 estimation", () => {
 
   it.each([unsupported, "bad", "0x1000"])("uses feeHistory median for unsupported/malformed/excessive priority (%s)", async (priority) => {
     const rpc = provider({ eth_maxPriorityFeePerGas: priority });
-    expect(await estimatePaymentFees(rpc, native)).toEqual({ maxFeePerGas: "0x99", maxPriorityFeePerGas: "0x3" });
+    expect(await estimatePaymentFees(rpc, native)).toEqual({ gas: "0x1d4c0", maxFeePerGas: "0x99", maxPriorityFeePerGas: "0x3" });
     expect(rpc.request).toHaveBeenCalledWith({ method: "eth_feeHistory", params: ["0x3", "latest", [50]] });
     expect(rpc.request.mock.calls.some(([arg]) => arg.method === "eth_gasPrice")).toBe(false);
   });
@@ -83,7 +121,7 @@ describe("fresh Arbitrum Sepolia EIP-1559 estimation", () => {
   it.each([unsupported, {}, { reward: [["bad"], ["0x0"], ["0x0"]] }])
   ("derives a priority from fresh gasPrice when both tip sources are unavailable", async (history) => {
     const rpc = provider({ eth_maxPriorityFeePerGas: unsupported, eth_feeHistory: history });
-    expect(await estimatePaymentFees(rpc, native)).toEqual({ maxFeePerGas: "0x9b", maxPriorityFeePerGas: "0x5" });
+    expect(await estimatePaymentFees(rpc, native)).toEqual({ gas: "0x1d4c0", maxFeePerGas: "0x9b", maxPriorityFeePerGas: "0x5" });
   });
 
   it.each(["bad", "0x63", "0x1000", "0x0"])("refuses bad/stale/excessive gasPrice (%s)", async (price) => {
@@ -91,13 +129,13 @@ describe("fresh Arbitrum Sepolia EIP-1559 estimation", () => {
       eth_feeHistory: unsupported, eth_gasPrice: price }), native)).rejects.toThrow(FEE_ESTIMATE_ERROR);
   });
 
-  it.each([native, usdg])("estimates EXACT transaction and leaves gas/nonce/gasPrice out of fee additions", async (transaction) => {
+  it.each([native, usdg])("estimates EXACT transaction and supplies gas without nonce/gasPrice", async (transaction) => {
     const snapshot = { ...transaction };
     const rpc = provider();
     const fees = await estimatePaymentFees(rpc, transaction);
     expect(rpc.request).toHaveBeenCalledWith({ method: "eth_estimateGas", params: [snapshot] });
     expect(transaction).toEqual(snapshot);
-    expect(Object.keys(fees).sort()).toEqual(["maxFeePerGas", "maxPriorityFeePerGas"]);
+    expect(Object.keys(fees).sort()).toEqual(["gas", "maxFeePerGas", "maxPriorityFeePerGas"]);
     expect(rpc.request.mock.calls.some(([arg]) => arg.method === "eth_sendTransaction")).toBe(false);
   });
 

@@ -293,7 +293,7 @@ describe("Orb frontend", () => {
       expect(request.params[0]).toEqual({
         from: address, to: receiver, value: `0x${BigInt("1000000000000").toString(16)}`,
         data: "0x4f524231abcd",
-        maxFeePerGas: index === 0 ? "0x98" : "0x12e", maxPriorityFeePerGas: "0x2",
+        gas: "0x1d4c0", maxFeePerGas: index === 0 ? "0x98" : "0x12e", maxPriorityFeePerGas: "0x2",
       });
     }
     expect(fetchMock.mock.calls.filter(([url]) => url === "/api/orb/credits/quotes")).toHaveLength(2);

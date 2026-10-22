@@ -437,6 +437,13 @@ def test_multi_origin_trust_preview_and_same_host(tmp_path):
 
 
 def test_stateless_challenge_and_session_work_across_lambda_containers(tmp_path, monkeypatch):
+    from prometheus.api.orb_s3_ledger import S3LedgerDatabase
+    from tests.s3_ledger_support import FakeLedgerS3
+    shared = FakeLedgerS3()
+    S3LedgerDatabase("test", shared).bootstrap()
+    monkeypatch.setenv("ORB_AWS_S3_BUCKET", "test")
+    monkeypatch.setattr("prometheus.api.orb_credits.S3LedgerDatabase",
+                        lambda bucket, **kwargs: S3LedgerDatabase(bucket, shared, **kwargs))
     monkeypatch.setenv("ORB_SERVERLESS_SYNC", "1")
     receiver = Account.create().address
 
@@ -463,6 +470,10 @@ def test_stateless_challenge_and_session_work_across_lambda_containers(tmp_path,
         c.sign_in(challenge["nonce"][:-2] + "00", signature, origin)
     with pytest.raises(CreditError):
         c.authenticate("Bearer " + session["token"][:-2] + "00")
+    foreign = FakeLedgerS3()
+    S3LedgerDatabase("foreign", foreign).bootstrap()
+    monkeypatch.setattr("prometheus.api.orb_credits.S3LedgerDatabase",
+                        lambda bucket, **kwargs: S3LedgerDatabase("foreign", foreign, **kwargs))
     forged = CreditService(CreditConfig(
         database=tmp_path / "forged.sqlite3", public_origin=origin, rpc_url="https://rpc.example.invalid",
         receiver=receiver, enabled=True, session_secret="attacker-secret-value-0000000",

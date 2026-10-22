@@ -4,6 +4,13 @@ const CHAIN_ID = 421614n;
 const RPC_TIMEOUT_MS = 8000;
 const ESTIMATE_DEADLINE_MS = 30000;
 const MAX_QUANTITY = (1n << 256n) - 1n;
+const SEPOLIA_RPC = "https://sepolia-rollup.arbitrum.io/rpc";
+const FEE_READ_METHODS = new Set(["eth_getBlockByNumber", "eth_maxPriorityFeePerGas", "eth_feeHistory", "eth_gasPrice", "eth_estimateGas"]);
+
+export function isWalletService404(error) {
+  return /(?:status(?: code)?[ :]*404|\bHTTP 404\b)/i.test(
+    [error?.message, error?.cause?.message, error?.data?.message, error?.data?.originalError?.message].filter(Boolean).join(" "));
+}
 
 function quantity(value, positive = false) {
   if (typeof value !== "string" || !/^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/.test(value)) throw new Error("Invalid RPC quantity");
@@ -28,9 +35,27 @@ export async function estimatePaymentFees(provider, transaction, assertActive = 
   async function rpc(method, params = []) {
     active();
     let timer;
+    const controller = new AbortController();
+    async function publicRead(name, args) {
+      const response = await fetch(SEPOLIA_RPC, { method: "POST", signal: controller.signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: name, params: args }) });
+      if (!response.ok) throw new Error("Official Sepolia fee RPC unavailable");
+      const body = await response.json();
+      if (body?.error || body?.jsonrpc !== "2.0" || body.id !== 1 || !("result" in body)) throw new Error("Invalid Sepolia RPC response");
+      return body.result;
+    }
     try {
       const result = await Promise.race([
-        Promise.resolve().then(() => provider.request({ method, params })),
+        Promise.resolve().then(() => provider.request({ method, params })).catch(async (error) => {
+          if (error?.code === 4001 || !FEE_READ_METHODS.has(method) || !isWalletService404(error)) throw error;
+          // A broken extension simulation service must not dictate gas. Only
+          // read-only fee methods may use the explicit official network RPC.
+          // Signing, accounts, switching and sending always remain in-wallet.
+          if (quantity(await publicRead("eth_chainId", [])) !== CHAIN_ID) throw new Error("Wrong fee RPC network");
+          active();
+          return publicRead(method, params);
+        }),
         new Promise((_, reject) => {
           timer = setTimeout(() => reject(new Error("Fee RPC timed out")),
             Math.min(RPC_TIMEOUT_MS, ESTIMATE_DEADLINE_MS - (Date.now() - started)));
@@ -43,7 +68,7 @@ export async function estimatePaymentFees(provider, transaction, assertActive = 
       console.warn("[Orb fee estimation]", method, error?.code, error?.message);
       active();
       throw error;
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); controller.abort(); }
   }
   async function identity() {
     if (quantity(await rpc("eth_chainId")) !== CHAIN_ID) {
@@ -89,9 +114,12 @@ export async function estimatePaymentFees(provider, transaction, assertActive = 
     await identity();
     const base = await baseFee();
     const priority = await priorityFee(base);
-    // Validate the full quote-bound native / ERC-20 transaction. Leave the gas
-    // limit to the wallet: Arbitrum's data-posting estimate can vary at approval.
-    quantity(await rpc("eth_estimateGas", [{ ...exact }]), true);
+    // Include Arbitrum's variable L1 posting component, not a static 100k cap.
+    // A 100k minimum and 20% integer headroom reduce wallet-side re-estimation.
+    const estimate = quantity(await rpc("eth_estimateGas", [{ ...exact }]), true);
+    const paddedGas = (estimate * 6n + 4n) / 5n;
+    const gas = paddedGas < 100000n ? 100000n : paddedGas;
+    if (gas > MAX_QUANTITY) throw new Error("Gas limit overflow");
     // Refresh base fee after potentially slow gas estimation, before approval.
     const freshBase = await baseFee();
     if (priority > freshBase) throw new Error("Priority fee exceeds fresh dynamic safety bound");
@@ -99,7 +127,7 @@ export async function estimatePaymentFees(provider, transaction, assertActive = 
     if (maxFee > MAX_QUANTITY) throw new Error("Fee cap overflow");
     await identity();
     active();
-    return { maxFeePerGas: hex(maxFee), maxPriorityFeePerGas: hex(priority) };
+    return { gas: hex(gas), maxFeePerGas: hex(maxFee), maxPriorityFeePerGas: hex(priority) };
   } catch (error) {
     if (terminal(error)) throw error;
     throw new Error(FEE_ESTIMATE_ERROR, { cause: error });
