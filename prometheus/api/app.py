@@ -648,9 +648,17 @@ def create_app(
         }
 
     @app.get("/api/orb/credits/config")
-    def orb_credit_config() -> dict:
+    def orb_credit_config(request: Request, response: Response) -> dict:
         from eth_utils import is_address, to_checksum_address
 
+        # This capability depends on explicit request context, never shared cache.
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Vary"] = "Authorization"
+        try:
+            judge_enabled = credit_service.judge_demo_available(
+                request.query_params.get("judge"), request.headers.get("authorization"))
+        except CreditError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
         treasury = (
             to_checksum_address(credit_service.config.receiver)
             if is_address(credit_service.config.receiver)
@@ -662,7 +670,7 @@ def create_app(
                 "treasury_address": treasury,
                 "price_wei": str(credit_service.config.price_wei),
                 "credit_options": [1, 3, 5], "confirmations": credit_service.config.confirmations,
-                "judge_demo_enabled": credit_service.config.judge_ready,
+                "judge_demo_enabled": judge_enabled,
                 "ledger_storage": ("postgres" if credit_service.database.postgres else
                                    "s3" if getattr(credit_service.database, "s3", False) else "sqlite")}
         methods = {"native_eth": {"enabled": "native_eth" in credit_service.config.methods,

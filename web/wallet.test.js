@@ -132,14 +132,15 @@ describe("Orb wallet authentication UI", () => {
     expect(document.getElementById("wallet-balance").textContent).toContain("2 testnet credits");
   });
 
-  it("offers existing access-code demo guidance after provider 404 without minting wallet credits", async () => {
+  it("never offers judge access on the public URL even if an old backend advertises it", async () => {
     setup({ judgeEnabled: true, paymentError: new Error("Request failed with status code 404") });
     initWallet({ onBalance: vi.fn() });
     await flush(); document.getElementById("wallet-connect").click(); await flush();
     document.getElementById("wallet-buy").click(); await flush();
-    expect(document.getElementById("wallet-feedback").textContent).toContain("Judge Demo is available with an access code");
+    expect(document.getElementById("wallet-feedback").textContent).not.toContain("Judge Demo");
     document.getElementById("header-judge").click();
-    expect(document.getElementById("judge-demo-form").classList.contains("hidden")).toBe(false);
+    expect(document.getElementById("header-judge").classList.contains("hidden")).toBe(true);
+    expect(document.getElementById("judge-demo-form").classList.contains("hidden")).toBe(true);
   });
 
   it("distinguishes an Orb quote endpoint 404 from a wallet provider 404", async () => {

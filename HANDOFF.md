@@ -1866,3 +1866,44 @@ a temporary process-only model override described below.
   using its unchanged Render API environment. Commit markers skip Render and
   a duplicate AWS deployment, preserving the manually verified Lambda rollout.
   Remote main is an ancestor of local main; remote dev remains absent.
+
+## 2026-10-22 - Separate public wallet mode from explicit judge links
+
+- User requested hiding all Judge Demo controls on clean public URLs, ignoring
+  cached judge sessions there, request-scoped demo config, S3 credit durability,
+  rebuilding, redeploying the existing Lambda and pushing main (dev if present).
+- Header/panel judge controls now start hidden in HTML. app.js passes the current
+  judge query value; wallet.js requires the exact OPENCV2026 link and backend
+  confirmation before showing/activating judge mode. The query remains on the
+  explicit judge link so reload does not silently convert it into a public URL.
+- Clean visits remove Orb judge tokens/flags from both sessionStorage and
+  localStorage, never restore them or advertise Judge Demo as a payment fallback.
+  Existing real wallet sessions/preferences remain intact. Judge-link reload
+  restores a valid session without creating another session/credit grant.
+- Config defaults judge_demo_enabled to false. A matching code or valid live
+  jg_ bearer session can enable it. Invalid/revoked sessions cannot. Capability
+  checks do not grant credits. Responses are private/no-store.
+- Existing S3 conditional-write ledger is retained, not replaced by independent
+  per-wallet JSON files. Cross-container tests cover purchases, spent balances,
+  tx replay, concurrent grants/reservations, durable results and session logout.
+- Validation: 237 frontend tests passed using one thread worker after a local
+  fork startup timeout. Credit/S3 backend suite: 34 passed with local OpenCV
+  threads limited to one after the existing two-second paid-job poll timed out.
+  No assertions or production processing settings were weakened/changed.
+- Guarded build and npm run build passed; Lambda artifact uses its own existing
+  API URL. User explicitly cancelled the suggested Render deployment and chose
+  to skip migration of old Render testnet records. AWS S3 is authoritative;
+  preserve existing AWS data, but do not import/reset Render records.
+- Updated only Vercel Production VITE_API_BASE_URL to the existing Lambda URL.
+  Preview environments remain unchanged. No Render deployment/configuration or
+  database changes; commit markers must prevent automatic Render deployment.
+  Preserve both Test ETH and Paxos USDG when enabling Lambda payment options.
+- Lambda redeployed successfully, preserving the existing S3 ledger. Enabled
+  native_eth,usdg explicitly with the official Sepolia contract, six decimals
+  and 3000 USDG base units per credit. Native price, receiver, origins, secrets,
+  role, memory and execution timeout remain unchanged. Code SHA256:
+  4N3ONhBXH0c8fBpGKX2854VvIyzzi792h4bu/WlPIkE=
+- Live Lambda health/readiness: 200. Config: public false, wrong judge code false,
+  matching judge link true; both methods enabled, ledger_storage=s3, private/
+  no-store, exact production Vercel CORS. Unauthenticated purchase routes: 401.
+  These probes created no sessions, grants, transactions or AI jobs.

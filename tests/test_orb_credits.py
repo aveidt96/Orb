@@ -362,6 +362,33 @@ def test_failed_paid_ai_releases_credit(setup, tmp_path, monkeypatch):
         assert service.balance(wallet.address.lower())["consumed"] == 0
 
 
+def test_judge_config_requires_explicit_link_or_valid_judge_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("ORB_ENV", "local")
+    monkeypatch.setenv("ORB_AI_LOCAL_TESTING", "0")
+    service = CreditService(CreditConfig(database=tmp_path / "judge-config.sqlite3",
+                                        judge_demo_code="OPENCV2026"))
+    app = create_app(provider="mock", output_dir=tmp_path / "output", upload_dir=tmp_path / "uploads",
+                     orb_ai_service=FakeAI(), orb_credit_service=service)
+    with TestClient(app, base_url="http://localhost") as client:
+        for suffix, expected in [("", False), ("?judge=", False), ("?judge=wrong", False),
+                                 ("?judge=OPENCV2026", True)]:
+            response = client.get("/api/orb/credits/config" + suffix)
+            assert response.status_code == 200
+            assert response.json()["judge_demo_enabled"] is expected
+            assert response.headers["cache-control"] == "private, no-store"
+        # Visibility checks must never issue a session or grant credits.
+        with service._db() as db:
+            assert db.execute("SELECT COUNT(*) AS n FROM balances").fetchone()["n"] == 0
+            assert db.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"] == 0
+        session = service.create_judge_session("OPENCV2026", "test")
+        headers = {"Authorization": "Bearer " + session["token"]}
+        assert client.get("/api/orb/credits/config", headers=headers).json()["judge_demo_enabled"] is True
+        assert client.get("/api/orb/credits/config", headers={"Authorization": "Bearer jg_" + "x" * 60}).json()["judge_demo_enabled"] is False
+        service.logout(headers["Authorization"])
+        assert client.get("/api/orb/credits/config", headers=headers).json()["judge_demo_enabled"] is False
+        assert service.balance(session["wallet"].lower())["granted"] == 10
+
+
 def test_judge_demo_session_and_rate_limits(tmp_path, monkeypatch):
     monkeypatch.setenv("ORB_ENV", "local")
     monkeypatch.setenv("ORB_AI_LOCAL_TESTING", "0")

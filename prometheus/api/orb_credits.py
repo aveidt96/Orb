@@ -300,6 +300,23 @@ class CreditService:
 
     verify_challenge = sign_in
 
+    def judge_demo_available(self, code: str | None = None, authorization: str | None = None) -> bool:
+        """Expose demo capability only to an explicit link or a live judge session."""
+        if not self.config.judge_ready:
+            return False
+        if isinstance(code, str) and len(code) <= 256 and hmac.compare_digest(
+            code.encode("utf-8"), self.config.judge_demo_code.strip().encode("utf-8")
+        ):
+            return True
+        if not authorization or not authorization.startswith(f"Bearer {JUDGE_SESSION_PREFIX}"):
+            return False
+        try:
+            return is_judge_wallet(self.authenticate(authorization))
+        except CreditError as exc:
+            if exc.status != 401:
+                raise
+            return False
+
     def authenticate(self, authorization: str | None) -> str:
         if not authorization or not authorization.startswith("Bearer "):
             raise CreditError("Connect and sign with your wallet first.", 401)

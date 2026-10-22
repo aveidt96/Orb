@@ -2,7 +2,7 @@
 
 ## Findings (2026-10-22)
 
-The public Vercel bundle `/assets/index-D1WXgsm8.js` points at
+At the start of the investigation, Vercel bundle `/assets/index-D1WXgsm8.js` pointed at
 `https://orb-api-7qwv.onrender.com`, not Lambda. Both Render and the AWS
 Function URL expose `/api/orb/credits/quotes` and
 `/api/orb/credits/quotes/{quote_id}/verify`: empty unauthenticated POSTs
@@ -18,6 +18,20 @@ return `Payment quote was not found.` Signed tokens restored identity, not
 purchased credit history.
 
 ## Wallet behavior
+
+### Public URL and judge link
+
+The clean public URL always uses signed Web3 wallet mode. Judge controls start
+hidden and only appear on `?judge=OPENCV2026` after backend confirmation. Cached
+judge sessions/flags in sessionStorage or localStorage cannot activate a public
+visit. An existing valid judge session is restored only on that explicit link,
+without issuing another demo grant.
+
+`GET /api/orb/credits/config` defaults `judge_demo_enabled` to false. A matching
+`judge` query value or an authenticated, unexpired `jg_` bearer session may expose
+the capability. Responses use `Cache-Control: private, no-store`; neither the
+code nor token is returned. Demo creation still requires the server's access
+code and existing limits. This visibility gate does not change wallet credits.
 
 - The exact quoted receiver, value and native quote-binding/ERC-20 calldata
   remain unchanged. ETH/USDG price and backend receipt verification are unchanged.
@@ -89,12 +103,22 @@ There was no durable Lambda credit ledger before this fix. New bootstrap is
 require reauthentication; an old missing quote cannot be invented or credited
 without independent evidence. Any historic Lambda payment recovery requires
 its transaction hash, quote details and an audited reconciliation. Render's
-Postgres balances are separate and are not imported/reset. Do not point the
-Vercel site at Lambda as a shortcut to migration.
+Postgres balances are separate and are not imported/reset.
+
+### Explicit fresh-ledger cutover
+
+The user subsequently chose to skip migration of old Render testnet records and
+use the existing AWS S3 ledger as authoritative. The production Vercel setting is
+`VITE_API_BASE_URL=https://jsnwiqkw5sqs3c7hag6ywd3ngm0vljpc.lambda-url.us-east-1.on.aws`.
+Render is not deployed or reconfigured, and its Postgres records remain intact.
+Old Render balances/sessions are not carried over; wallet authentication must
+establish a Lambda session. Existing AWS records are preserved, never reset.
+Native ETH and Paxos test USDG remain the intended enabled payment methods.
 
 The GitHub deployment workflow supports `[skip aws]` in a commit message, so a
 manual exact-code deployment does not trigger another competing AWS deployment
-when pushed. Vercel/Render may still perform their normal configured Git deploys.
+when pushed. This cutover also uses `[skip render]` to prevent a Render deploy;
+Vercel performs its normal main build using the production-only Lambda setting.
 No `dev` branch is created if it does not already exist.
 
 ## Validation boundaries

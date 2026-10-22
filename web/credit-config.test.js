@@ -55,12 +55,15 @@ describe("Orb credit configuration availability", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     sessionStorage.clear();
+    localStorage.clear();
+    window.history.replaceState({}, "", "/");
     document.open(); document.write(html); document.close();
     HTMLElement.prototype.focus = vi.fn();
   });
   afterEach(() => {
     vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs();
     delete window.ethereum;
+    window.history.replaceState({}, "", "/");
   });
 
   it("shows loading immediately and keeps header clicks from starting authentication", async () => {
@@ -251,14 +254,66 @@ describe("Orb credit configuration availability", () => {
     expect(configFetch).toHaveBeenCalledTimes(1);
   });
 
-  it("activates a 10-credit Judge Demo session via the header Judge Demo button without a Web3 wallet", async () => {
+  it.each(["/", "/?judge=", "/?judge=wrong", "/?other=OPENCV2026"])("keeps %s public and clears legacy judge state without touching a wallet session", async (url) => {
+    window.history.replaceState({}, "", url);
+    sessionStorage.setItem("orb-wallet-session", JSON.stringify({ token: "jg_cached", judgeDemo: true }));
+    localStorage.setItem("orb-wallet-session", JSON.stringify({ token: "jg_legacy" }));
+    localStorage.setItem("orb-judge-mode", "1");
+    localStorage.setItem("orb-wallet-preference", "unchanged");
+    const { wallet, fetchMock } = setup(() => response({ ...readyConfig, judge_demo_enabled: true }));
+    await settle();
+    expect(document.getElementById("header-judge").classList.contains("hidden")).toBe(true);
+    expect(document.getElementById("judge-demo-box").classList.contains("hidden")).toBe(true);
+    document.getElementById("header-judge").click();
+    document.getElementById("judge-demo-toggle").click();
+    expect(await wallet.activateJudgeDemo("OPENCV2026")).toBe(false);
+    expect(document.getElementById("judge-demo-form").classList.contains("hidden")).toBe(true);
+    expect(sessionStorage.getItem("orb-wallet-session")).toBeNull();
+    expect(localStorage.getItem("orb-wallet-session")).toBeNull();
+    expect(localStorage.getItem("orb-judge-mode")).toBeNull();
+    expect(localStorage.getItem("orb-wallet-preference")).toBe("unchanged");
+    expect(wallet.isJudgeDemo()).toBe(false);
+    expect(wallet.headers()).toEqual({});
+    expect(feedback()).not.toMatch(/judge/i);
+    expect(fetchMock.mock.calls.some(([path]) => path.includes("judge"))).toBe(false);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/orb/credits/config");
+  });
+
+  it("preserves a real wallet session on the clean public URL", async () => {
+    savedSession();
+    localStorage.setItem("orb-wallet-session", sessionStorage.getItem("orb-wallet-session"));
+    const { wallet } = setup(); await settle();
+    expect(wallet.isAuthenticated()).toBe(true);
+    expect(wallet.isJudgeDemo()).toBe(false);
+    expect(localStorage.getItem("orb-wallet-session")).not.toBeNull();
+    expect(document.getElementById("header-judge").classList.contains("hidden")).toBe(true);
+  });
+
+  it("restores a judge session on the explicit link without granting another demo balance", async () => {
+    window.history.replaceState({}, "", "/?judge=OPENCV2026");
+    sessionStorage.setItem("orb-wallet-session", JSON.stringify({ token: "jg_saved", address: account,
+      judgeDemo: true, expiresAt: Date.now() / 1000 + 3600 }));
+    globalThis.fetch = vi.fn(async (path) => {
+      if (path === "/api/orb/credits/config?judge=OPENCV2026") return response({ ...readyConfig, judge_demo_enabled: true });
+      if (path === "/api/orb/credits/balance") return response({ available: 4, judge_demo: true });
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const wallet = initWallet({ onBalance: vi.fn() }); await settle();
+    expect(wallet.isJudgeDemo()).toBe(true);
+    expect(wallet.headers()).toEqual({ Authorization: "Bearer jg_saved" });
+    expect(document.getElementById("wallet-balance").textContent).toBe("4 test credits available");
+    expect(fetch.mock.calls.some(([path]) => path === "/api/orb/judge-session")).toBe(false);
+  });
+
+  it("activates a 10-credit Judge Demo session only through the explicit link without a Web3 wallet", async () => {
+    window.history.replaceState({}, "", "/?judge=OPENCV2026");
     delete window.ethereum;
     const judgeWallet = "0x4a75646765202610160000000000000000000001";
     globalThis.fetch = vi.fn(async (url, options) => {
-      if (url === "/api/orb/credits/config") return response({ enabled: false });
+      if (url === "/api/orb/credits/config?judge=OPENCV2026") return response({ enabled: false, judge_demo_enabled: true });
       if (url === "/api/orb/judge-session") {
         const body = JSON.parse(options.body);
-        if (body.code !== "opencv-2026") return response({ detail: "Invalid judge demo access code." }, 401);
+        if (body.code !== "OPENCV2026") return response({ detail: "Invalid judge demo access code." }, 401);
         return response({
           wallet: judgeWallet, token: "judge-session-token",
           expires_at: Math.floor(Date.now() / 1000) + 86400,
@@ -273,10 +328,7 @@ describe("Orb credit configuration availability", () => {
     await settle();
     document.getElementById("header-judge").click();
     expect(document.getElementById("wallet-panel").classList.contains("hidden")).toBe(false);
-    expect(document.getElementById("judge-demo-form").classList.contains("hidden")).toBe(false);
-    document.getElementById("judge-code-input").value = "opencv-2026";
-    document.getElementById("judge-demo-form").dispatchEvent(new Event("submit", { cancelable: true }));
-    await settle();
+    expect(document.getElementById("judge-demo-form").classList.contains("hidden")).toBe(true);
     expect(wallet.isJudgeDemo()).toBe(true);
     expect(wallet.hasCredit()).toBe(true);
     expect(wallet.headers()).toEqual({ Authorization: "Bearer judge-session-token" });
@@ -290,7 +342,7 @@ describe("Orb credit configuration availability", () => {
   it("auto-unlocks Judge Demo Mode from ?judge=<code> on load even with window.ethereum present and allows switching to a real Web3 wallet", async () => {
     const judgeWallet = "0x4a75646765202610160000000000000000000002";
     const originalUrl = window.location.href;
-    window.history.replaceState({}, "", "/?judge=auto-code-2026&keep=1");
+    window.history.replaceState({}, "", "/?judge=OPENCV2026&keep=1");
     const replaceSpy = vi.spyOn(window.history, "replaceState");
     const provider = { on: vi.fn(), request: vi.fn(async ({ method }) => {
       if (method === "eth_chainId") return "0x66eee";
@@ -300,10 +352,10 @@ describe("Orb credit configuration availability", () => {
     }) };
     window.ethereum = provider;
     globalThis.fetch = vi.fn(async (url, options) => {
-      if (url === "/api/orb/credits/config") return response(readyConfig);
+      if (url === "/api/orb/credits/config?judge=OPENCV2026") return response({ ...readyConfig, judge_demo_enabled: true });
       if (url === "/api/orb/judge-session") {
         const body = JSON.parse(options.body);
-        expect(body.code).toBe("auto-code-2026");
+        expect(body.code).toBe("OPENCV2026");
         return response({
           wallet: judgeWallet, token: "auto-judge-token",
           expires_at: Math.floor(Date.now() / 1000) + 86400,
@@ -319,8 +371,8 @@ describe("Orb credit configuration availability", () => {
     });
     const wallet = initWallet({ onBalance: vi.fn() });
     await settle();
-    expect(replaceSpy).toHaveBeenCalledWith({}, "", "/?keep=1");
-    expect(window.location.search).toBe("?keep=1");
+    expect(replaceSpy).not.toHaveBeenCalled();
+    expect(window.location.search).toBe("?judge=OPENCV2026&keep=1");
     expect(wallet.isJudgeDemo()).toBe(true);
     expect(wallet.hasCredit()).toBe(true);
     expect(document.getElementById("wallet-balance").textContent).toBe("10 test credits available");
