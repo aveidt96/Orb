@@ -1,0 +1,231 @@
+{
+  "fps": 30,
+  "duration": 96,
+  "bpm": 120,
+  "beatsPerBar": 4,
+  "scenes": [
+    {
+      "id": "cover",
+      "start": 0,
+      "end": 4,
+      "number": "00",
+      "label": "Orb",
+      "headline": "Understand visuals.\nCreate better prompts.",
+      "support": "Agentic Vision Engine · Perception → Decision → Action"
+    },
+    {
+      "id": "upload",
+      "start": 4,
+      "end": 16,
+      "number": "01",
+      "label": "Decode",
+      "headline": "Understand visuals.",
+      "support": "Reconstruct a plausible generation prompt from an image or video."
+    },
+    {
+      "id": "agent",
+      "start": 16,
+      "end": 34,
+      "number": "02",
+      "label": "Agentic Vision Engine",
+      "headline": "Perception →\nDecision → Action",
+      "support": "Autonomous CLAHE shadow/contrast recovery activated"
+    },
+    {
+      "id": "hud",
+      "start": 34,
+      "end": 54,
+      "number": "03",
+      "label": "OpenCV Vision HUD",
+      "headline": "Visual reference",
+      "support": "Canny edge contours · Rule-of-Thirds & saliency center reticle · Hough structural lines"
+    },
+    {
+      "id": "telemetry",
+      "start": 54,
+      "end": 72,
+      "number": "04",
+      "label": "OpenCV 5.0 Agentic Telemetry",
+      "headline": "Deterministic\nTelemetry Grounding",
+      "support": "Dominant Color Palette (cv2.kmeans)"
+    },
+    {
+      "id": "result",
+      "start": 72,
+      "end": 88,
+      "number": "05",
+      "label": "Decoded reference",
+      "headline": "Reconstructed\nprompt",
+      "support": "Orb AI · plausible reconstruction, not the creator’s exact prompt"
+    },
+    {
+      "id": "outro",
+      "start": 88,
+      "end": 96,
+      "number": "06",
+      "label": "Orb",
+      "headline": "Perceive.\nRemediate. Decode.",
+      "support": "Try Orb Live on AWS Graviton2"
+    }
+  ],
+  "events": [
+    {
+      "at": 4.1,
+      "type": "typing",
+      "target": "judge-link",
+      "frame": 123,
+      "durationFrames": 27,
+      "characters": 17
+    },
+    {
+      "at": 5.5,
+      "type": "incoming",
+      "target": "judge-active",
+      "frame": 165
+    },
+    {
+      "at": 5.766666666666667,
+      "type": "tap",
+      "target": "judge",
+      "frame": 173
+    },
+    {
+      "at": 6.5,
+      "type": "tap",
+      "target": "judge-close",
+      "frame": 195
+    },
+    {
+      "at": 7.0,
+      "type": "tap",
+      "target": "decode",
+      "frame": 210
+    },
+    {
+      "at": 9.0,
+      "type": "send",
+      "target": "drop",
+      "frame": 270
+    },
+    {
+      "at": 11.0,
+      "type": "tap",
+      "target": "decode-reference",
+      "frame": 330
+    },
+    {
+      "at": 11.5,
+      "type": "typing",
+      "target": "checking",
+      "frame": 345
+    },
+    {
+      "at": 12.0,
+      "type": "send",
+      "target": "upload",
+      "frame": 360
+    },
+    {
+      "at": 16.0,
+      "type": "incoming",
+      "target": "perception",
+      "frame": 480
+    },
+    {
+      "at": 22.0,
+      "type": "notification",
+      "target": "decision",
+      "frame": 660
+    },
+    {
+      "at": 26.0,
+      "type": "send",
+      "target": "clahe",
+      "frame": 780
+    },
+    {
+      "at": 32.0,
+      "type": "incoming",
+      "target": "grounding",
+      "frame": 960
+    },
+    {
+      "at": 34.0,
+      "type": "notification",
+      "target": "results",
+      "frame": 1020
+    },
+    {
+      "at": 36.0,
+      "type": "tap",
+      "target": "original",
+      "frame": 1080
+    },
+    {
+      "at": 40.0,
+      "type": "tap",
+      "target": "hud",
+      "frame": 1200
+    },
+    {
+      "at": 46.0,
+      "type": "tap",
+      "target": "clahe-preview",
+      "frame": 1380
+    },
+    {
+      "at": 52.0,
+      "type": "tap",
+      "target": "original-again",
+      "frame": 1560
+    },
+    {
+      "at": 54.0,
+      "type": "incoming",
+      "target": "telemetry",
+      "frame": 1620
+    },
+    {
+      "at": 60.0,
+      "type": "notification",
+      "target": "benchmarks",
+      "frame": 1800
+    },
+    {
+      "at": 66.0,
+      "type": "send",
+      "target": "architecture",
+      "frame": 1980
+    },
+    {
+      "at": 72.0,
+      "type": "incoming",
+      "target": "analysis",
+      "frame": 2160
+    },
+    {
+      "at": 78.0,
+      "type": "incoming",
+      "target": "prompt",
+      "frame": 2340
+    },
+    {
+      "at": 84.0,
+      "type": "tap",
+      "target": "copy",
+      "frame": 2520
+    },
+    {
+      "at": 84.26666666666667,
+      "type": "notification",
+      "target": "copied",
+      "frame": 2528
+    },
+    {
+      "at": 88.0,
+      "type": "send",
+      "target": "outro",
+      "frame": 2640
+    }
+  ]
+}

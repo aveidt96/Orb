@@ -208,7 +208,7 @@ def build_and_upload_arm64_zip(session: boto3.Session, bucket: str) -> str:
             "python-multipart>=0.0.9",
             "Pillow>=11.0",
             "eth-account>=0.13,<1",
-            "opencv-python-headless>=4.10.0",
+            "opencv-python-headless==5.0.0.93",
             "numpy>=1.26.0",
             "google-genai>=1.0",
             "requests>=2.31.0",

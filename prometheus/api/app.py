@@ -626,6 +626,7 @@ def create_app(
             destination.unlink(missing_ok=True)
             raise HTTPException(status_code=422, detail="Invalid image file or dimensions.") from exc
 
+    @app.get("/health")
     @app.get("/api/health")
     def health() -> dict:
         analyzer_config = _make_config("health").analyzer

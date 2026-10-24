@@ -88,6 +88,9 @@ def test_health(client):
     body = response.json()
     assert body["status"] == "ok"
     assert body["analyzer"]["provider"] == "mock"
+    root_response = client.get("/health")
+    assert root_response.status_code == 200
+    assert root_response.json() == body
 
 
 def test_ready_confirms_local_upload_prerequisites(monkeypatch, tmp_path):

@@ -1,0 +1,392 @@
+{
+  "opencv_version": "5.0.0",
+  "compute_arch": "x86_64",
+  "compute_badge": "x86_64 AVX2",
+  "compute_runtime": {
+    "arch": "x86_64",
+    "raw_machine": "AMD64",
+    "simd_flags": [
+      "FP16",
+      "AVX2",
+      "AVX",
+      "SSE4_2",
+      "SSE4_1",
+      "SSE3"
+    ],
+    "primary_simd": "AVX2",
+    "compute_badge": "x86_64 AVX2"
+  },
+  "aws_integration": {
+    "enabled": true,
+    "synced": false,
+    "services": [
+      "Amazon S3",
+      "AWS Graviton / Compute Ready"
+    ],
+    "s3_bucket": "orb-opencv5-vision-2026",
+    "s3_region": "us-east-1",
+    "artifacts_synced": []
+  },
+  "media_kind": "video",
+  "processing_ms": 6942.75,
+  "effective_fps": 4.32,
+  "color_and_lighting": {
+    "mean_luminance": 31.16,
+    "contrast_std": 41.24,
+    "dynamic_range_pct": 47.1,
+    "lighting_key": "low-key",
+    "mean_saturation": 128.03,
+    "dominant_colors": [
+      {
+        "hex": "#0d0e0d",
+        "rgb": [
+          13,
+          14,
+          13
+        ],
+        "weight_pct": 60.1
+      },
+      {
+        "hex": "#262623",
+        "rgb": [
+          38,
+          38,
+          35
+        ],
+        "weight_pct": 25.0
+      },
+      {
+        "hex": "#2e4a5b",
+        "rgb": [
+          46,
+          74,
+          91
+        ],
+        "weight_pct": 6.8
+      },
+      {
+        "hex": "#745533",
+        "rgb": [
+          116,
+          85,
+          51
+        ],
+        "weight_pct": 5.8
+      },
+      {
+        "hex": "#b1a285",
+        "rgb": [
+          177,
+          162,
+          133
+        ],
+        "weight_pct": 2.3
+      }
+    ]
+  },
+  "sharpness_and_geometry": {
+    "laplacian_sharpness": 421.57,
+    "sharpness_score": 421.57,
+    "sharpness_tier": "crisp/high-detail",
+    "sharpness_label": "crisp/high-detail",
+    "edge_density_pct": 8.35,
+    "saliency_region": "center-weighted",
+    "dominant_lines": "vertical-dominant",
+    "saliency_center": {
+      "x_norm": 0.584,
+      "y_norm": 0.497,
+      "composition_zone": "center-weighted"
+    },
+    "structural_lines": {
+      "dominant_orientation": "vertical-dominant",
+      "line_count": 216,
+      "horizontal_pct": 7.4,
+      "vertical_pct": 70.8,
+      "diagonal_pct": 21.8
+    }
+  },
+  "motion_and_continuity": {
+    "frames_processed": 30,
+    "effective_fps": 4.32,
+    "mean_dx": 1.071,
+    "mean_dy": -0.001,
+    "radial_flow": -0.0,
+    "motion_magnitude": 1.071,
+    "dominant_motion": "pan-right",
+    "mean_hist_correlation": 0.993,
+    "min_hist_correlation": 0.99,
+    "continuity_class": "continuous-shot",
+    "primary_keyframe": "scene_174.jpg",
+    "blurry_frame_count": 0,
+    "keyframe_ranking": [
+      {
+        "file": "scene_174.jpg",
+        "sharpness": 421.57,
+        "status": "selected-sharp",
+        "rank": 1
+      },
+      {
+        "file": "scene_168.jpg",
+        "sharpness": 421.56,
+        "status": "selected-sharp",
+        "rank": 2
+      },
+      {
+        "file": "scene_150.jpg",
+        "sharpness": 418.01,
+        "status": "selected-sharp",
+        "rank": 3
+      },
+      {
+        "file": "scene_162.jpg",
+        "sharpness": 417.3,
+        "status": "selected-sharp",
+        "rank": 4
+      },
+      {
+        "file": "scene_156.jpg",
+        "sharpness": 414.96,
+        "status": "selected-sharp",
+        "rank": 5
+      },
+      {
+        "file": "scene_000.jpg",
+        "sharpness": 413.06,
+        "status": "selected-sharp",
+        "rank": 6
+      },
+      {
+        "file": "scene_144.jpg",
+        "sharpness": 413.03,
+        "status": "selected-sharp",
+        "rank": 7
+      },
+      {
+        "file": "scene_006.jpg",
+        "sharpness": 412.48,
+        "status": "selected-sharp",
+        "rank": 8
+      },
+      {
+        "file": "scene_012.jpg",
+        "sharpness": 412.34,
+        "status": "selected-sharp",
+        "rank": 9
+      },
+      {
+        "file": "scene_018.jpg",
+        "sharpness": 411.72,
+        "status": "selected-sharp",
+        "rank": 10
+      },
+      {
+        "file": "scene_030.jpg",
+        "sharpness": 409.82,
+        "status": "selected-sharp",
+        "rank": 11
+      },
+      {
+        "file": "scene_036.jpg",
+        "sharpness": 409.61,
+        "status": "selected-sharp",
+        "rank": 12
+      },
+      {
+        "file": "scene_024.jpg",
+        "sharpness": 409.59,
+        "status": "selected-sharp",
+        "rank": 13
+      },
+      {
+        "file": "scene_138.jpg",
+        "sharpness": 408.6,
+        "status": "selected-sharp",
+        "rank": 14
+      },
+      {
+        "file": "scene_048.jpg",
+        "sharpness": 408.27,
+        "status": "selected-sharp",
+        "rank": 15
+      },
+      {
+        "file": "scene_042.jpg",
+        "sharpness": 407.91,
+        "status": "selected-sharp",
+        "rank": 16
+      },
+      {
+        "file": "scene_054.jpg",
+        "sharpness": 407.8,
+        "status": "selected-sharp",
+        "rank": 17
+      },
+      {
+        "file": "scene_060.jpg",
+        "sharpness": 406.43,
+        "status": "selected-sharp",
+        "rank": 18
+      },
+      {
+        "file": "scene_066.jpg",
+        "sharpness": 405.92,
+        "status": "selected-sharp",
+        "rank": 19
+      },
+      {
+        "file": "scene_072.jpg",
+        "sharpness": 405.39,
+        "status": "selected-sharp",
+        "rank": 20
+      },
+      {
+        "file": "scene_078.jpg",
+        "sharpness": 404.17,
+        "status": "selected-sharp",
+        "rank": 21
+      },
+      {
+        "file": "scene_132.jpg",
+        "sharpness": 404.12,
+        "status": "selected-sharp",
+        "rank": 22
+      },
+      {
+        "file": "scene_126.jpg",
+        "sharpness": 403.22,
+        "status": "selected-sharp",
+        "rank": 23
+      },
+      {
+        "file": "scene_120.jpg",
+        "sharpness": 402.37,
+        "status": "selected-sharp",
+        "rank": 24
+      },
+      {
+        "file": "scene_114.jpg",
+        "sharpness": 400.85,
+        "status": "selected-sharp",
+        "rank": 25
+      },
+      {
+        "file": "scene_084.jpg",
+        "sharpness": 400.7,
+        "status": "selected-sharp",
+        "rank": 26
+      },
+      {
+        "file": "scene_102.jpg",
+        "sharpness": 400.3,
+        "status": "selected-sharp",
+        "rank": 27
+      },
+      {
+        "file": "scene_108.jpg",
+        "sharpness": 400.28,
+        "status": "selected-sharp",
+        "rank": 28
+      },
+      {
+        "file": "scene_096.jpg",
+        "sharpness": 400.04,
+        "status": "selected-sharp",
+        "rank": 29
+      },
+      {
+        "file": "scene_090.jpg",
+        "sharpness": 400.03,
+        "status": "selected-sharp",
+        "rank": 30
+      }
+    ]
+  },
+  "agentic_actions": [
+    {
+      "step": "perception->decision->action",
+      "type": "sharpness_gated_keyframe_ranking",
+      "trigger": "Evaluated 30 keyframes; 0 below sharpness threshold (45.0)",
+      "decision": "Selected sharpest keyframe 'scene_174.jpg' (Laplacian=421.57) for primary telemetry",
+      "action": "Ranked keyframes by focus sharpness and deprioritized motion-blurred frames for prompt synthesis",
+      "artifact": "scene_174.jpg"
+    },
+    {
+      "step": "perception->decision->action",
+      "type": "clahe_shadow_contrast_recovery",
+      "trigger": "Primary keyframe mean_luminance=31.16, contrast_std=41.24",
+      "decision": "Autonomous CLAHE shadow/contrast recovery activated on primary keyframe",
+      "action": "Saved equalized keyframe opencv_clahe_enhanced.jpg in run directory",
+      "artifact": "opencv_clahe_enhanced.jpg"
+    }
+  ],
+  "agentic_decisions": [
+    {
+      "step": "perception->decision->action",
+      "type": "sharpness_gated_keyframe_ranking",
+      "trigger": "Evaluated 30 keyframes; 0 below sharpness threshold (45.0)",
+      "decision": "Selected sharpest keyframe 'scene_174.jpg' (Laplacian=421.57) for primary telemetry",
+      "action": "Ranked keyframes by focus sharpness and deprioritized motion-blurred frames for prompt synthesis",
+      "artifact": "scene_174.jpg"
+    },
+    {
+      "step": "perception->decision->action",
+      "type": "clahe_shadow_contrast_recovery",
+      "trigger": "Primary keyframe mean_luminance=31.16, contrast_std=41.24",
+      "decision": "Autonomous CLAHE shadow/contrast recovery activated on primary keyframe",
+      "action": "Saved equalized keyframe opencv_clahe_enhanced.jpg in run directory",
+      "artifact": "opencv_clahe_enhanced.jpg"
+    }
+  ],
+  "cv_grounding_brief": "[OpenCV Deterministic Telemetry \u2014 Ground visual analysis in these measurements]:\n- Palette (k-means RGB): #0d0e0d (60.1%), #262623 (25.0%), #2e4a5b (6.8%), #745533 (5.8%), #b1a285 (2.3%); Lighting key: low-key (mean luminance 31.16/255, contrast std 41.24, dynamic range 47.1%).\n- Geometry & Focus: Laplacian sharpness 421.57 (crisp/high-detail), Canny edge density 8.35%, saliency center (0.584, 0.497) -> center-weighted, Hough line structure: vertical-dominant (216 lines).\n- Optical Flow & Continuity: dominant motion 'pan-right' (dx=1.071, dy=-0.001, radial=-0.0, magnitude=1.071), HSV continuity=0.993 (continuous-shot).\n- Agentic CV Actions Taken: Selected sharpest keyframe 'scene_174.jpg' (Laplacian=421.57) for primary telemetry -> Ranked keyframes by focus sharpness and deprioritized motion-blurred frames for prompt synthesis; Autonomous CLAHE shadow/contrast recovery activated on primary keyframe -> Saved equalized keyframe opencv_clahe_enhanced.jpg in run directory.",
+  "clahe_triggered": true,
+  "clahe_applied": true,
+  "clahe_artifact": "opencv_clahe_enhanced.jpg",
+  "hud_artifact": "opencv_hud_overlay.jpg",
+  "asset_provenance": {
+    "source": "Original generated example scene",
+    "perception": "Actual repository OpenCV functions, local x86_64 run",
+    "vlm_output": "Illustrative authored example; no live provider call",
+    "before": {
+      "laplacian_sharpness": 421.57,
+      "sharpness_score": 421.57,
+      "sharpness_tier": "crisp/high-detail",
+      "sharpness_label": "crisp/high-detail",
+      "edge_density_pct": 8.35,
+      "saliency_region": "center-weighted",
+      "dominant_lines": "vertical-dominant",
+      "saliency_center": {
+        "x_norm": 0.584,
+        "y_norm": 0.497,
+        "composition_zone": "center-weighted"
+      },
+      "structural_lines": {
+        "dominant_orientation": "vertical-dominant",
+        "line_count": 216,
+        "horizontal_pct": 7.4,
+        "vertical_pct": 70.8,
+        "diagonal_pct": 21.8
+      }
+    },
+    "after": {
+      "laplacian_sharpness": 931.18,
+      "sharpness_score": 931.18,
+      "sharpness_tier": "crisp/high-detail",
+      "sharpness_label": "crisp/high-detail",
+      "edge_density_pct": 13.87,
+      "saliency_region": "center-weighted",
+      "dominant_lines": "vertical-dominant",
+      "saliency_center": {
+        "x_norm": 0.556,
+        "y_norm": 0.503,
+        "composition_zone": "center-weighted"
+      },
+      "structural_lines": {
+        "dominant_orientation": "vertical-dominant",
+        "line_count": 455,
+        "horizontal_pct": 25.7,
+        "vertical_pct": 38.2,
+        "diagonal_pct": 36.0
+      }
+    }
+  }
+}

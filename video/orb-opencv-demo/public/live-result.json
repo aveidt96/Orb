@@ -1,0 +1,167 @@
+{
+  "prompt": "A wide-angle shot of a sprawling, industrial factory interior filled with massive vertical steel columns, complex networks of metallic pipes, and overhead scaffolding. The wet, reflective concrete floor features puddles that catch the warm amber glow from wall-mounted lamps and the cool blue ambient lighting cast from distant fixtures, creating high contrast and deep shadows. The composition looks down a central walkway flanked by heavy machinery and industrial structures, emphasizing a dark, gritty, and atmospheric industrial aesthetic.",
+  "visual_analysis": {
+    "subject_and_scene": "An expansive industrial factory interior featuring a wet concrete walkway, heavy steel support pillars, complex overhead piping systems, electrical boxes, and industrial machinery.",
+    "composition": "A centered, linear perspective view looking down a factory corridor. The frame is heavily structured with strong vertical and horizontal lines, creating a sense of deep perspective and scale.",
+    "lighting": "Low-key lighting with a high-contrast interplay between warm amber wall lights and cool blue-toned ambient illumination, creating sharp highlights, deep shadows, and glossy reflections on the wet floor.",
+    "camera_perspective": "Eye-level, wide-angle perspective looking straight down the industrial hallway, grounding the viewer inside the space.",
+    "color_palette": "Dominated by dark grays and blacks (#0d0e0d, #262623), accented by industrial blue-grays (#2e4a5b), warm browns (#745533), and muted metallic highlights (#b1a285).",
+    "visual_style": "Realistic, gritty industrial photography with high detail, sharp textures, and a moody cinematic finish.",
+    "atmosphere": "Industrial, desolate, atmospheric, moody, and heavy with a sense of vast machinery and isolation.",
+    "motion_and_progression": "Static composition, but the receding perspective and wet reflective floor lead the viewer's eye deep into the background corridor."
+  },
+  "refinements": [
+    "Add atmospheric fog or steam drifting through the pipes to enhance the industrial mood.",
+    "Incorporate subtle lens flare from the wall-mounted light fixtures for added realism.",
+    "Adjust the color grade to emphasize a more pronounced cyberpunk teal-and-orange contrast."
+  ],
+  "operation": "decode",
+  "opencv_telemetry": {
+    "opencv_version": "5.0.0",
+    "compute_arch": "ARM64",
+    "compute_badge": "AWS S3 · ARM64 NEON",
+    "compute_runtime": {
+      "arch": "ARM64",
+      "raw_machine": "aarch64",
+      "simd_flags": [
+        "NEON",
+        "FP16"
+      ],
+      "primary_simd": "NEON",
+      "compute_badge": "AWS S3 · ARM64 NEON"
+    },
+    "aws_integration": {
+      "enabled": true,
+      "synced": true,
+      "services": [
+        "Amazon S3",
+        "AWS Lambda (Arm64 Graviton)"
+      ],
+      "s3_bucket": "orb-opencv5-vision-2026",
+      "s3_region": "us-east-1",
+      "s3_prefix": "s3://orb-opencv5-vision-2026/orb-jobs/e06339087c1546e084287b45410018e2/"
+    },
+    "media_kind": "image",
+    "processing_ms": 1578.769,
+    "effective_fps": 0.63,
+    "color_and_lighting": {
+      "mean_luminance": 31.16,
+      "contrast_std": 41.24,
+      "dynamic_range_pct": 47.1,
+      "lighting_key": "low-key",
+      "mean_saturation": 128.02,
+      "dominant_colors": [
+        {
+          "hex": "#0d0e0d",
+          "rgb": [
+            13,
+            14,
+            13
+          ],
+          "weight_pct": 60.1
+        },
+        {
+          "hex": "#262623",
+          "rgb": [
+            38,
+            38,
+            35
+          ],
+          "weight_pct": 25.0
+        },
+        {
+          "hex": "#2e4a5b",
+          "rgb": [
+            46,
+            74,
+            91
+          ],
+          "weight_pct": 6.8
+        },
+        {
+          "hex": "#745533",
+          "rgb": [
+            116,
+            85,
+            51
+          ],
+          "weight_pct": 5.8
+        },
+        {
+          "hex": "#b1a285",
+          "rgb": [
+            177,
+            162,
+            133
+          ],
+          "weight_pct": 2.3
+        }
+      ]
+    },
+    "sharpness_and_geometry": {
+      "laplacian_sharpness": 421.57,
+      "sharpness_score": 421.57,
+      "sharpness_tier": "crisp/high-detail",
+      "sharpness_label": "crisp/high-detail",
+      "edge_density_pct": 8.35,
+      "saliency_region": "center-weighted",
+      "dominant_lines": "vertical-dominant",
+      "saliency_center": {
+        "x_norm": 0.584,
+        "y_norm": 0.497,
+        "composition_zone": "center-weighted"
+      },
+      "structural_lines": {
+        "dominant_orientation": "vertical-dominant",
+        "line_count": 216,
+        "horizontal_pct": 7.4,
+        "vertical_pct": 70.8,
+        "diagonal_pct": 21.8
+      }
+    },
+    "motion_and_continuity": {},
+    "agentic_actions": [
+      {
+        "step": "perception->decision->action",
+        "type": "clahe_shadow_contrast_recovery",
+        "trigger": "mean_luminance=31.16 (<60.0)",
+        "decision": "Autonomous CLAHE shadow/contrast recovery activated",
+        "action": "Equalized LAB L-channel (clipLimit=2.5, grid=8x8) and attached opencv_clahe_enhanced.jpg alongside original reference",
+        "artifact": "opencv_clahe_enhanced.jpg"
+      }
+    ],
+    "agentic_decisions": [
+      {
+        "step": "perception->decision->action",
+        "type": "clahe_shadow_contrast_recovery",
+        "trigger": "mean_luminance=31.16 (<60.0)",
+        "decision": "Autonomous CLAHE shadow/contrast recovery activated",
+        "action": "Equalized LAB L-channel (clipLimit=2.5, grid=8x8) and attached opencv_clahe_enhanced.jpg alongside original reference",
+        "artifact": "opencv_clahe_enhanced.jpg"
+      }
+    ],
+    "cv_grounding_brief": "[OpenCV Deterministic Telemetry — Ground visual analysis in these measurements]:\n- Palette (k-means RGB): #0d0e0d (60.1%), #262623 (25.0%), #2e4a5b (6.8%), #745533 (5.8%), #b1a285 (2.3%); Lighting key: low-key (mean luminance 31.16/255, contrast std 41.24, dynamic range 47.1%).\n- Geometry & Focus: Laplacian sharpness 421.57 (crisp/high-detail), Canny edge density 8.35%, saliency center (0.584, 0.497) -> center-weighted, Hough line structure: vertical-dominant (216 lines).\n- Agentic CV Actions Taken: Autonomous CLAHE shadow/contrast recovery activated -> Equalized LAB L-channel (clipLimit=2.5, grid=8x8) and attached opencv_clahe_enhanced.jpg alongside original reference.",
+    "clahe_triggered": true,
+    "clahe_applied": true,
+    "clahe_artifact": "opencv_clahe_enhanced.jpg",
+    "hud_artifact": "opencv_hud_overlay.jpg",
+    "aws_s3": {
+      "enabled": true,
+      "synced": true,
+      "bucket": "orb-opencv5-vision-2026",
+      "region": "us-east-1"
+    }
+  },
+  "image": {
+    "name": "shadowed_corridor.jpg",
+    "width": 1280,
+    "height": 720
+  },
+  "notice": "The exact original creator prompt cannot be guaranteed.",
+  "provider": "Orb AI",
+  "demo_provenance": {
+    "source": "Single authorized live AWS judge Decode of an original generated example image",
+    "elapsed_seconds": 46.67,
+    "private_fields_removed": true
+  }
+}

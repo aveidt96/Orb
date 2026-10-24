@@ -1,0 +1,21 @@
+{
+  "voice": "Microsoft Zira Desktop",
+  "language": "en-US",
+  "rate": 1,
+  "cues": [
+    {"id":"cover","start":0.4,"end":3.85,"text":"Understand visuals. Create better prompts."},
+    {"id":"upload","start":4.5,"end":15.5,"text":"Start with a visual reference. Choose Decode, upload your image or video, and let Orb AI reveal its visual language."},
+    {"id":"perception","start":16.6,"end":21.65,"text":"Perception. OpenCV measures edges, focus, and color."},
+    {"id":"decision","start":22.25,"end":25.7,"text":"Then, decision. Orb detects the low light."},
+    {"id":"action","start":26.4,"end":33.4,"text":"Finally, action. Adaptive contrast recovery brings shadow detail forward, while preserving the original reference."},
+    {"id":"original","start":34.7,"end":39.3,"text":"Compare the original reference with two additional views."},
+    {"id":"hud","start":40.4,"end":45.6,"text":"The OpenCV vision overlay makes edges and composition easier to inspect."},
+    {"id":"recovery","start":46.5,"end":52.9,"text":"Shadow recovery reveals more detail in dark areas. Switch between views for context."},
+    {"id":"telemetry","start":54.5,"end":59.7,"text":"Measured telemetry grounds the analysis in color, lighting, sharpness, and geometry."},
+    {"id":"benchmarks","start":60.4,"end":65.7,"text":"These benchmarks were measured locally, separately from the cloud sample."},
+    {"id":"architecture","start":66.4,"end":71.75,"text":"In the cloud, Orb AI turns visual evidence into insight."},
+    {"id":"analysis","start":72.6,"end":78.3,"text":"The result combines visual analysis with a plausible, generation-ready prompt."},
+    {"id":"copy","start":79.1,"end":87.2,"text":"Review the details, copy your prompt, and take it into your creative workflow. Your reference, a new direction."},
+    {"id":"outro","start":89.0,"end":95.4,"text":"Perceive. Remediate. Decode. Try Orb AI, live on AWS Graviton."}
+  ]
+}
