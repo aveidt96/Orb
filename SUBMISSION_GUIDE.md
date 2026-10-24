@@ -201,8 +201,11 @@ metadata is added, so it need not contain the final `aws_s3` result.
 
 The backend can issue 24-hour pre-signed HUD/CLAHE URLs and fallback-read
 diagnostics/job JSON from S3 across Lambda containers. Original uploaded media
-is not part of this diagnostic S3 upload set; its local `/tmp` preview is
-ephemeral and should not be described as durably retained.
+is not part of this diagnostic S3 upload set; its server `/tmp` copy is ephemeral.
+For a newly submitted job, the browser keeps a job-bound object URL for the
+user-selected File so the Original tab does not depend on Lambda container
+affinity. The URL is released on returning home, selecting a new reference or
+rendering another job; it is not persisted across reloads or uploaded again.
 
 ### Shared credit/result ledger
 
@@ -258,11 +261,13 @@ destructive production race test. See [Lambda credit persistence](docs/LAMBDA_CR
   recovery measurements; it is not a controlled hardware speedup comparison.
 
 Local regression verification for the recovery-metrics revision: **343 backend
-tests passed**, with **8 Postgres integration skips**, and **244 frontend tests
+tests passed**, with **8 Postgres integration skips**, and **246 frontend tests
 passed across 10 files**. The health test checks both aliases; new recovery tests
 cover positive measurements, bypass, zero baselines and video keyframes. UI tests
 cover Hough counts, positive/negative/undefined gains and older result payloads.
-The guarded production frontend build also passed before Lambda deployment.
+Two additional UI regressions verify original image/video previews when Lambda's
+temporary source endpoint is unavailable, including URL cleanup and job isolation.
+The guarded production frontend build also passed, including the preview fix.
 
 ## 6. Local preview and deployment references
 

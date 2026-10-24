@@ -130,7 +130,12 @@ let enhanceAttemptKey = null;
 let creditMode = "local";
 let wallet = null;
 let privateMediaUrls = [];
+let localReferencePreview = null;
 let actionTiming = null;
+function releaseLocalReference() {
+  if (localReferencePreview) URL.revokeObjectURL(localReferencePreview.url);
+  localReferencePreview = null;
+}
 function finishActionTiming(status) {
   actionTiming?.finish(status);
   actionTiming = null;
@@ -172,6 +177,7 @@ function resumePaidJob() {
 }
 
 function showScreen(name) {
+  if (name === "home") releaseLocalReference();
   setMenuOpen(false);
   setAboutOpen(false);
   wallet.close();
@@ -421,6 +427,7 @@ function setFile(file) {
     return;
   }
   selectedFile = file;
+  releaseLocalReference();
   els.uploadError.classList.add("hidden");
   els.uploadShell.classList.add("has-file");
   els.dropzone.classList.add("hidden");
@@ -598,6 +605,12 @@ async function startVisual() {
     return;
   }
   currentJobId = data.job_id;
+  // Lambda /tmp media is ephemeral. Keep this selected File for its own result,
+  // without uploading another copy or depending on which container serves it.
+  releaseLocalReference();
+  try {
+    localReferencePreview = { jobId: data.job_id, kind: mediaKind, url: URL.createObjectURL(file) };
+  } catch { /* Fall back to the authenticated server preview where supported. */ }
   actionTiming?.mark("job_available");
   rememberPaidJob(currentJobId);
   selectedFile = null;
@@ -860,6 +873,10 @@ export function renderResult(result) {
   const media = result.image || result.video || {};
   const cv = result.opencv_telemetry || null;
   const operation = result.operation || currentMode;
+  const localPreview = localReferencePreview?.jobId === result.job_id ? localReferencePreview : null;
+  if (!localPreview) releaseLocalReference();
+  const localImage = result.image && localPreview?.kind === "image" ? localPreview.url : null;
+  const localVideo = result.video && localPreview?.kind === "video" ? localPreview.url : null;
   els.resTitle.textContent = media.name || (operation === "enhance" ? "Enhanced prompt" : "Visual reference");
   els.resEyebrow.textContent = operation === "decode" ? "Decoded reference" : operation === "compose" ? "Composed from reference" : "Enhanced prompt";
   els.resMode.textContent = operation === "decode"
@@ -880,21 +897,28 @@ export function renderResult(result) {
     els.resChips.appendChild(span);
   }
 
-  currentPreviewHasVideo = Boolean(video.preview_url);
-  currentPreviewHasImage = Boolean(image.preview_url);
+  currentPreviewHasVideo = Boolean(localVideo || video.preview_url);
+  currentPreviewHasImage = Boolean(localImage || image.preview_url);
   const hudUrl = cv?.hud_preview_url || cv?.aws_s3?.hud_s3_url || null;
   const claheUrl = cv?.clahe_preview_url || cv?.aws_s3?.clahe_s3_url || null;
   const hasHud = Boolean(hudUrl);
   const hasClahe = Boolean(claheUrl);
-  const hasAnyPreview = Boolean(media.preview_url || hasHud || hasClahe);
+  const hasAnyPreview = Boolean(localImage || localVideo || media.preview_url || hasHud || hasClahe);
 
   els.resPreviewCard.classList.toggle("hidden", !hasAnyPreview);
-  if (video.preview_url) {
-    if (creditMode !== "credits") els.resVideo.src = apiUrl(video.preview_url);
+  if (localVideo || video.preview_url) {
+    if (localVideo) els.resVideo.src = localVideo;
+    else if (creditMode !== "credits") els.resVideo.src = apiUrl(video.preview_url);
+    else els.resVideo.removeAttribute("src");
     els.resVideo.classList.remove("hidden");
   }
   else { els.resVideo.removeAttribute("src"); els.resVideo.classList.add("hidden"); }
-  if (image.preview_url) { if (creditMode !== "credits") els.resImage.src = apiUrl(image.preview_url); els.resImage.classList.remove("hidden"); }
+  if (localImage || image.preview_url) {
+    if (localImage) els.resImage.src = localImage;
+    else if (creditMode !== "credits") els.resImage.src = apiUrl(image.preview_url);
+    else els.resImage.removeAttribute("src");
+    els.resImage.classList.remove("hidden");
+  }
   else { els.resImage.removeAttribute("src"); els.resImage.classList.add("hidden"); }
 
   if (els.resHudImage) {
@@ -1174,8 +1198,9 @@ async function loadPrivateMedia(result) {
       for (const node of targets) node.src = url;
     } catch { /* The prompt remains usable if a preview cannot load. */ }
   };
-  if (result.video?.preview_url) void load(result.video.preview_url, els.resVideo);
-  if (result.image?.preview_url) void load(result.image.preview_url, els.resImage);
+  const localPreview = localReferencePreview?.jobId === result.job_id ? localReferencePreview : null;
+  if (result.video?.preview_url && localPreview?.kind !== "video") void load(result.video.preview_url, els.resVideo);
+  if (result.image?.preview_url && localPreview?.kind !== "image") void load(result.image.preview_url, els.resImage);
   if (result.opencv_telemetry?.hud_preview_url) {
     void load(result.opencv_telemetry.hud_preview_url, [els.resHudImage, els.resOpencvHudImg]);
   }

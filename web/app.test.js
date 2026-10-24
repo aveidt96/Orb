@@ -618,6 +618,62 @@ describe("Orb frontend", () => {
     expect(inspectCalls(fetchMock)).toHaveLength(0);
   });
 
+  it.each(["image", "video"])("keeps the original %s preview local when Lambda's temporary source is unavailable", async (kind) => {
+    const job = "a".repeat(32);
+    const address = `0x${"11".repeat(20)}`;
+    const sourcePath = `/api/jobs/${job}/frames/source.${kind === "image" ? "png" : "mp4"}`;
+    const create = vi.fn(() => "blob:orb-local-reference");
+    const revoke = vi.fn();
+    const NativeURL = URL;
+    vi.stubGlobal("URL", class extends NativeURL {
+      static createObjectURL = create;
+      static revokeObjectURL = revoke;
+    });
+    try {
+      sessionStorage.setItem("orb-wallet-session", JSON.stringify({ token: "saved-session", address,
+        expiresAt: Date.now() / 1000 + 3600 }));
+      window.ethereum = { on: vi.fn(), request: vi.fn(async ({ method }) =>
+        method === "eth_chainId" ? "0x66eee" : [address]) };
+      const payload = { job_id: job, operation: "decode", prompt: "A reference-derived prompt.",
+        [kind]: { name: "reference", width: 1280, height: 720, preview_url: sourcePath } };
+      const fetchMock = vi.fn(async (url) => {
+        if (url === "/api/orb/credits/config") return response({ enabled: true, chain_id: 421614, price_wei: "1000" });
+        if (url === "/api/health") return response({ status: "ok", orb_ai_access: "credits" });
+        if (url === "/api/ready") return response({ status: "ready" });
+        if (isUploadPingUrl(url)) return response({}, 204);
+        if (url === "/api/orb/credits/balance") return response({ wallet: address, available: 1 });
+        if (isInspectUrl(url)) return response({ job_id: job }, 202);
+        if (url === `/api/jobs/${job}`) return response({ state: "complete", stage: "Complete" });
+        if (url === `/api/jobs/${job}/result`) return response(payload);
+        return response({ detail: "Temporary source unavailable." }, 404);
+      });
+      globalThis.fetch = fetchMock;
+      const mod = await import("./app.js");
+      await flush();
+      const input = document.getElementById("file-input");
+      const file = new File(["reference-bytes"], kind === "image" ? "reference.png" : "reference.mp4",
+        { type: kind === "image" ? "image/png" : "video/mp4" });
+      Object.defineProperty(input, "files", { configurable: true, value: [file] });
+      input.dispatchEvent(new Event("change"));
+      document.getElementById("decode-btn").click();
+      await flush();
+      const preview = document.getElementById(kind === "image" ? "res-image" : "res-video");
+      expect(create).toHaveBeenCalledWith(file);
+      expect(preview.getAttribute("src")).toBe("blob:orb-local-reference");
+      expect(preview.classList.contains("hidden")).toBe(false);
+      expect(fetchMock.mock.calls.some(([url]) => url === sourcePath)).toBe(false);
+      expect(inspectCalls(fetchMock)).toHaveLength(1);
+      mod.renderResult(payload);
+      expect(revoke).not.toHaveBeenCalledWith("blob:orb-local-reference");
+      document.getElementById("again-btn").click();
+      expect(revoke).toHaveBeenCalledWith("blob:orb-local-reference");
+      mod.renderResult({ ...payload, job_id: "b".repeat(32) });
+      expect(preview.getAttribute("src")).not.toBe("blob:orb-local-reference");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("runs one correlated upload and renders the reconstructed prompt", async () => {
     const fetchMock = mockApi({
       jobStatuses: [{ state: "complete", stage: "Complete" }],
