@@ -147,6 +147,8 @@ All three fresh AWS underexposed 1080p runs measured **0.96% → 1.08% edge dens
 (+12.5%)** and **20.06 → 28.04 Laplacian variance (+39.8%)** before JPEG encoding.
 The historical corridor audit's **+66.1%** measured a decoded JPEG artifact and
 is not a universal gain or an interchangeable pre-JPEG measurement.
+The final fresh Vercel corridor Decode reported **+65.0% edge gain** and
+**+121.8% sharpness gain**, with **216 Hough lines** displayed in the UI.
 
 ## 3. Judge instant access and the public Web3 boundary
 
@@ -270,6 +272,17 @@ temporary source endpoint is unavailable, including URL cleanup and job isolatio
 Mobile header actions wrap so judge, wallet, credits and menu controls remain
 within the viewport when all are visible.
 The guarded production frontend build also passed, including the preview fix.
+
+The final production Vercel browser workflow passed with **unmocked HTTP**:
+automatic 10-credit judge activation without a wallet prompt, one corridor
+Decode, quantitative recovery/Hough display, and all three preview images
+loaded. The balance became **9 available / 1 consumed / 0 reserved**; a reload
+restored that spent balance without another grant. Returning to the public URL
+hid judge controls and cleared the cached session. Desktop (1440px) and mobile
+(390px) result layouts stayed within the viewport. Direct S3/ledger inspection
+confirmed all expected objects, matching recovery metrics and the consumed
+reservation with a durable result. This completes the previously pending live
+judge/Decode verification; it is not a real-wallet purchase test.
 
 ## 6. Local preview and deployment references
 

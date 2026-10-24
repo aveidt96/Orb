@@ -74,6 +74,33 @@ journals attempts and does not automatically retry a media POST. Reports exclude
 tokens, wallet identifiers and signed URLs. The existing Function URL and AWS
 read credentials are required for runtime/S3 verification.
 
+### Live Vercel judge workflow and corridor reference
+
+The final end-to-end browser check on **2026-10-24, 02:24:17–02:24:44 UTC** used
+the production Vercel judge link, a real automatic 10-credit grant and one real
+Decode of the **1280×720** corridor image. No HTTP responses were mocked.
+
+- OpenCV processing: **1,620.945 ms**; browser upload-to-render: **12,747 ms**.
+- Canny edge density: **8.35% → 13.78%**, production gain **+65.0%**.
+- Laplacian variance: **421.57 → 935.14**, production gain **+121.8%**.
+- UI: **`vertical-dominant (216 lines)`**, **`+65.0% edge gain`** and the real S3
+  sync badge were visible. Original, HUD and CLAHE previews all loaded at 1280px
+  native width. The original used the selected local File, avoiding ephemeral
+  Lambda source-file reads.
+- Credits: **10 → 9 available**, **1 consumed**, **0 reserved**. Reload preserved
+  the spent balance without another judge grant; a clean public visit hid judge
+  controls and cleared the cached judge session.
+- Real result layouts had no horizontal overflow at **1440px and 390px**.
+  Recorded-result layout replay additionally checked 320, 360 and 600px.
+- All four S3 diagnostic/job-state objects were present; the persisted telemetry
+  matched the HTTP result. The encrypted ledger contained one consumed
+  reservation and one durable result for job `b9c78604fd8d44a8bf994c5b59f63341`.
+
+This is a separate single-image end-to-end check, not part of the 1080p averages.
+Earlier live browser checks exposed temporary-source preview and mobile-header
+issues, which were fixed and published to Vercel before this passing check.
+The evidence log records the additional verification jobs separately.
+
 ### Historical AWS image-processing samples
 
 Both samples use the original **1280×720** industrial corridor reference. They

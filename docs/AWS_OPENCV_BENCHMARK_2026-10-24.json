@@ -53,5 +53,57 @@
   "judge_balance_before": {"available": 10, "consumed": 0, "reserved": 0},
   "judge_balance_after": {"available": 4, "consumed": 6, "reserved": 0},
   "all_expected_s3_objects_verified": true,
-  "full_local_report": "output/lambda-opencv-benchmark-2026-10-24.json"
+  "full_local_report": "output/lambda-opencv-benchmark-2026-10-24.json",
+  "vercel_judge_end_to_end": {
+    "started_utc": "2026-10-24T02:24:17.871Z",
+    "completed_utc": "2026-10-24T02:24:44.377Z",
+    "origin": "https://orb-azure-ten.vercel.app",
+    "frontend_asset": "/assets/index-DJrzNjro.js",
+    "http_responses_mocked": false,
+    "job_id": "b9c78604fd8d44a8bf994c5b59f63341",
+    "width": 1280,
+    "height": 720,
+    "processing_ms": 1620.945,
+    "browser_upload_to_render_ms": 12747,
+    "hough_line_count": 216,
+    "dominant_orientation": "vertical-dominant",
+    "clahe_recovery": {
+      "measurement_stage": "before_jpeg_encoding",
+      "original_edge_density": 8.35,
+      "original_laplacian_variance": 421.57,
+      "post_clahe_edge_density": 13.78,
+      "edge_density_gain_pct": 65.0,
+      "post_clahe_laplacian_variance": 935.14,
+      "sharpness_gain_pct": 121.8
+    },
+    "judge_credits_before": 10,
+    "judge_credits_after": 9,
+    "consumed": 1,
+    "reserved": 0,
+    "judge_grant_posts": 1,
+    "decode_posts": 1,
+    "wallet_prompts": 0,
+    "original_hud_clahe_previews_loaded": true,
+    "reload_preserved_spent_balance_without_new_grant": true,
+    "public_mode_cleared_judge_session": true,
+    "live_viewports_without_overflow": [1440, 390],
+    "recorded_result_replay_widths_without_overflow": [320, 360, 390, 600, 1440],
+    "s3_telemetry_matches_http": true,
+    "s3_objects": [
+      {"name": "opencv_hud_overlay.jpg", "bytes": 300848},
+      {"name": "opencv_clahe_enhanced.jpg", "bytes": 295651},
+      {"name": "opencv_telemetry.json", "bytes": 5165},
+      {"name": "job_state.json", "bytes": 15943}
+    ],
+    "ledger_reservation": "consumed",
+    "durable_result_count": 1,
+    "ledger_integrity": "ok",
+    "full_local_report": "output/live-judge-recovery-2026-10-24-passed.json"
+  },
+  "earlier_browser_verification_jobs_excluded_from_benchmark_averages": [
+    {"job_id": "5d95c8e83ad044fdb90c827a9a92661f", "observation": "Found ephemeral original-source preview failure"},
+    {"job_id": "0bcc43124c0f491486ca320987e218d0", "observation": "Preview fix passed; screenshot harness capture needed correction"},
+    {"job_id": "545a5edc32ed4b47a94fe2502a8cff24", "observation": "Found mobile judge-header overflow"}
+  ],
+  "verification_notes": "One additional observation-only browser attempt activated judge mode but stopped before media submission because response capture failed. No media POST was automatically retried. Earlier completed Decode jobs each consumed a judge credit as designed."
 }
