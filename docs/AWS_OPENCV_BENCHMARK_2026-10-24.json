@@ -1,0 +1,57 @@
+{
+  "started_utc": "2026-10-24T01:51:54.799801+00:00",
+  "completed_utc": "2026-10-24T01:52:49.945764+00:00",
+  "method": "Real sequential judge-authenticated Decode requests; no debug timing endpoint",
+  "function": "orb-opencv5-api",
+  "region": "us-east-1",
+  "architecture": "arm64",
+  "runtime": "python3.12",
+  "memory_mb": 512,
+  "timeout_seconds": 120,
+  "code_sha256_base64": "qpNTq04DGbHu/3oz/8OCPH03YMUPJ5YTORLooaB0+iI=",
+  "opencv_package": "opencv-python-headless==5.0.0.93",
+  "opencv_runtime": "5.0.0",
+  "reported_simd": ["NEON", "FP16"],
+  "container_cold_warm_classification": "not established",
+  "width": 1920,
+  "height": 1080,
+  "workloads": {
+    "1080p_standard": {
+      "source_sha256": "4beb2dd18f25131c82eb54ae695f7e14072dd6e65a305558b6585346edb2a508",
+      "job_ids": ["4bb86b6bddcc4730b461e6f6dbe5b73a", "2b35ee6e6d124dbc8e1370f660049c25", "b4e6bd76bae34881917d6b75721d9d4d"],
+      "processing_ms": [1439.173, 646.084, 759.792],
+      "upload_to_result_ms": [10433.6, 4748.8, 4832.6],
+      "mean_processing_ms": 948.350,
+      "clahe_applied": false,
+      "hough_line_count": 27
+    },
+    "1080p_underexposed": {
+      "source_sha256": "0f22ba09d8688988da7d223312190a0ee81196848454860e74df151e3ce5dd73",
+      "job_ids": ["b698772b823b4c5fb8546592c125d224", "3c95fa5ecedc4a05a4fd5325ce6bd660", "3831886a2c7341fb9e37932127b6b22b"],
+      "processing_ms": [857.472, 899.963, 838.369],
+      "upload_to_result_ms": [5480.1, 5181.5, 5204.7],
+      "mean_processing_ms": 865.268,
+      "clahe_applied": true,
+      "hough_line_count": 17,
+      "clahe_recovery": {
+        "measurement_stage": "before_jpeg_encoding",
+        "original_edge_density": 0.96,
+        "original_laplacian_variance": 20.06,
+        "post_clahe_edge_density": 1.08,
+        "edge_density_gain_pct": 12.5,
+        "post_clahe_laplacian_variance": 28.04,
+        "sharpness_gain_pct": 39.8
+      }
+    }
+  },
+  "health": [
+    {"path": "/health", "status": 200, "round_trip_ms": 5482.4},
+    {"path": "/api/health", "status": 200, "round_trip_ms": 229.0},
+    {"path": "/api/ready", "status": 200, "round_trip_ms": 231.5}
+  ],
+  "health_payloads_identical": true,
+  "judge_balance_before": {"available": 10, "consumed": 0, "reserved": 0},
+  "judge_balance_after": {"available": 4, "consumed": 6, "reserved": 0},
+  "all_expected_s3_objects_verified": true,
+  "full_local_report": "output/lambda-opencv-benchmark-2026-10-24.json"
+}

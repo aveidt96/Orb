@@ -6,6 +6,7 @@ const html = readFileSync(resolve(process.cwd(), "web/index.html"), "utf8");
 
 describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
   let renderResult;
+  let renderOpenCVTelemetry;
 
   beforeAll(async () => {
     document.open();
@@ -23,6 +24,7 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
     });
     const mod = await import("./app.js");
     renderResult = mod.renderResult;
+    renderOpenCVTelemetry = mod.renderOpenCVTelemetry;
   });
 
   it("renders benchmark badges, agentic actions, CLAHE toggle, 5 color swatches, and CV metrics on Decode/Compose", () => {
@@ -51,6 +53,10 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
         effective_fps: 186.9,
         clahe_triggered: true,
         clahe_applied: true,
+        post_clahe_edge_density: 12.37,
+        edge_density_gain_pct: 66.1,
+        post_clahe_laplacian_variance: 368.4,
+        sharpness_gain_pct: 100,
         clahe_preview_url: "/api/jobs/job123/frames/opencv_clahe_enhanced.jpg",
         hud_preview_url: "/api/jobs/job123/frames/opencv_hud_overlay.jpg",
         aws_s3: {
@@ -86,6 +92,7 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
           edge_density_pct: 7.45,
           saliency_region: "golden-ratio balanced",
           dominant_lines: "horizontal-dominant",
+          structural_lines: { dominant_orientation: "horizontal-dominant", line_count: 216 },
         },
         motion_and_continuity: {
           dominant_motion: "pan-right",
@@ -98,9 +105,9 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
         agentic_actions: [
           {
             type: "clahe_shadow_contrast_recovery",
-            trigger: "mean_luminance=38.4 (<78) or contrast_std=24.1 (<34)",
+            trigger: "mean_luminance=38.4 (<60) or contrast_std=24.1 (<32)",
             decision: "Autonomous CLAHE Shadow & Contrast Recovery",
-            action: "Applied LAB L-channel CLAHE (clipLimit=2.8, tileGridSize=8x8).",
+            action: "Applied LAB L-channel CLAHE (clipLimit=2.5, tileGridSize=8x8).",
           },
           {
             type: "sharpness_gated_keyframe_ranking",
@@ -124,6 +131,7 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
       "Latency: 42.8 ms",
       "Throughput: 186.9 FPS",
       "CLAHE Auto-Recovery: Active",
+      "+66.1% edge gain",
       "AWS S3 Synced (orb-opencv-2026-artifacts)",
     ]);
     expect(document.querySelector("#res-opencv-badges .opencv-badge.highlight")?.textContent).toBe(
@@ -185,13 +193,42 @@ describe("OpenCV 5.0 Agentic Vision Telemetry UI (Sprint 3)", () => {
     expect(metricTerms).toEqual([
       "Lighting & Exposure (cv2.calcHist / LAB)",
       "Composition & Focus (cv2.Laplacian / Canny / HoughLinesP)",
+      "CLAHE Recovery (cv2.Canny / Laplacian)",
       "Optical Flow & Continuity (cv2.calcOpticalFlowFarneback / compareHist)",
       "AWS Cloud Persistence (Amazon S3)",
     ]);
     const metricDetails = [...document.querySelectorAll("#res-opencv-metrics dd")].map((n) => n.textContent);
-    expect(metricDetails[2]).toContain("pan-right");
-    expect(metricDetails[2]).toContain("continuous-single-take");
-    expect(metricDetails[3]).toContain("s3://orb-opencv-2026-artifacts");
+    expect(metricDetails[1]).toContain("horizontal-dominant (216 lines)");
+    expect(metricDetails[2]).toContain("Edge density 12.37% (+66.1%)");
+    expect(metricDetails[2]).toContain("Laplacian variance 368.4 (+100.0%)");
+    expect(metricDetails[3]).toContain("pan-right");
+    expect(metricDetails[3]).toContain("continuous-single-take");
+    expect(metricDetails[4]).toContain("s3://orb-opencv-2026-artifacts");
+  });
+
+  it.each([undefined, null, 0, -12.5, Infinity, "66.1"])("does not advertise positive recovery for gain %s", (gain) => {
+    renderOpenCVTelemetry({ clahe_applied: true, edge_density_gain_pct: gain,
+      post_clahe_edge_density: 0, sharpness_and_geometry: { sharpness_score: 0,
+        sharpness_label: "soft/motion-blurred", edge_density_pct: 0, saliency_region: "center-weighted",
+        dominant_lines: "organic/curved", structural_lines: { line_count: 0 } } });
+    expect(document.getElementById("res-opencv-badges").textContent).not.toContain("edge gain");
+    expect(document.getElementById("res-opencv-metrics").textContent).toContain("organic/curved (0 lines)");
+    expect(document.getElementById("res-opencv-card").textContent).not.toMatch(/NaN|Infinity|undefined%/);
+    if (gain === -12.5) expect(document.getElementById("res-opencv-metrics").textContent).toContain("(-12.5%)");
+  });
+
+  it("accepts nested recovery metrics, a single Hough line, and older results without recovery data", () => {
+    const geometry = { sharpness_score: 20, dominant_lines: "vertical-dominant", structural_lines: { line_count: 1 } };
+    renderOpenCVTelemetry({ clahe_triggered: true, sharpness_and_geometry: geometry,
+      clahe_recovery: { post_clahe_edge_density: 2, edge_density_gain_pct: 25 } });
+    expect(document.getElementById("res-opencv-badges").textContent).toContain("+25.0% edge gain");
+    expect(document.getElementById("res-opencv-metrics").textContent).toContain("vertical-dominant (1 line)");
+    renderOpenCVTelemetry({ sharpness_and_geometry: { sharpness_score: 20, dominant_lines: "vertical-dominant" } });
+    expect(document.getElementById("res-opencv-metrics").textContent).toContain("lines: vertical-dominant");
+    expect(document.getElementById("res-opencv-metrics").textContent).not.toContain("CLAHE Recovery");
+    expect(document.getElementById("res-opencv-badges").textContent).not.toContain("edge gain");
+    renderOpenCVTelemetry({ clahe_applied: false, edge_density_gain_pct: 66.1 });
+    expect(document.getElementById("res-opencv-badges").textContent).not.toContain("edge gain");
   });
 
   it("hides #res-opencv-card cleanly on text-only Enhance results", () => {

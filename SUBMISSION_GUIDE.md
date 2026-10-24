@@ -12,8 +12,10 @@ synthesis. Pixel-derived measurements and conditional visual recovery ground
 the synthesis; they do not guarantee elimination of model hallucinations.
 
 The runtime and operational observations below were verified in the
-**2026-10-24 read-only audit**. See [BENCHMARKS.md](BENCHMARKS.md) for provenance,
-historical AWS samples and separately labeled local benchmark results.
+**2026-10-24 read-only audit and subsequent authorized deployment/live Decode
+benchmark**. See [BENCHMARKS.md](BENCHMARKS.md) and the
+[sanitized AWS evidence log](docs/AWS_OPENCV_BENCHMARK_2026-10-24.json) for
+provenance, new ARM64 results and separately labeled local baseline measurements.
 
 ## 1. Live architecture: Vercel → AWS Lambda / Mangum → OpenCV + Orb AI + S3
 
@@ -49,6 +51,8 @@ flowchart TB
 - **Backend:** `https://jsnwiqkw5sqs3c7hag6ywd3ngm0vljpc.lambda-url.us-east-1.on.aws/`
 - **Lambda:** `orb-opencv5-api`, `us-east-1`, `Architectures=["arm64"]`, Python 3.12,
   **512 MB**, **120-second timeout**, active at audit.
+  The enhanced ZIP was deployed on October 24 at **01:51:18 UTC**, preserving
+  the existing configuration, payment options, Function URL and credit ledger.
 - **Adapter:** `handler = Mangum(app, lifespan="auto")` in `prometheus/api/app.py`.
   `ORB_SERVERLESS_SYNC=1` makes accepted jobs execute before Lambda returns and
   freezes the invocation; scratch work uses `/tmp`.
@@ -74,10 +78,10 @@ configuration, payment-gate status and AI-access state. The repository now also
 registers `GET /health` on **the same handler**, returning the exact same JSON.
 Neither response includes the OpenCV package version or architecture.
 
-The October 24 audit observed `/api/health` and `/api/ready` returning **200**;
-`/health` returned **404** before this alias fix. The alias must be deployed before
-claiming live root-path success. `/api/ready` checks local upload prerequisites;
-it does not execute an AI operation, purchase credits or prove an S3 write.
+After deployment, live `/health` and `/api/health` both returned **200 with
+identical JSON**. Live `/api/ready` also returned 200. The earlier audit's root
+404 is historical. Readiness checks local upload prerequisites; it does not
+execute an AI operation, purchase credits or prove an S3 write.
 
 ## 2. OpenCV agentic loop: Perception → Decision → Action
 
@@ -90,8 +94,8 @@ it does not execute an AI operation, purchase credits or prove an S3 write.
   cluster initialization uses `KMEANS_PP_CENTERS` without a fixed RNG seed.
 - **Focus and geometry:** Laplacian variance, Canny edge density, edge
   center-of-mass relative to rule-of-thirds points, and probabilistic Hough lines.
-  `structural_lines.line_count` is in JSON; the UI shows line orientation rather
-  than the numeric count.
+  `structural_lines.line_count` is in JSON and the UI renders it beside the
+  orientation, for example **`vertical-dominant (216 lines)`**.
 - **Video:** Farnebäck dense optical flow, horizontal/vertical/radial motion
   summaries and HSV histogram correlation for visual continuity.
 
@@ -102,6 +106,9 @@ it does not execute an AI operation, purchase credits or prove an S3 write.
    Recovery modifies the LAB **L-channel**, retaining the A/B channels before
    conversion back to BGR, and writes `opencv_clahe_enhanced.jpg`. Original and
    recovered references can both be supplied to Orb AI.
+   Recovery now measures enhanced-image Canny edge density and Laplacian variance
+   before JPEG encoding, and calculates signed percentage changes from the
+   original frame's published measurements.
 2. **Keyframe ranking:** Video candidates are ranked by Laplacian variance;
    values below **45.0** are flagged as blurry. The sharpest candidate supplies
    primary OpenCV telemetry. Ranking/flags should not be described as proof that
@@ -119,19 +126,27 @@ visual telemetry; text-only Enhance results hide it. It shows:
 
 - Runtime badge: **`OpenCV 5.0.0 · AWS S3 · ARM64 NEON`** in the audited AWS sample.
 - OpenCV processing latency, effective throughput and conditional
-  **`CLAHE Auto-Recovery: Active`**.
+  **`CLAHE Auto-Recovery: Active`**, plus a highlighted **`+N.N% edge gain`** when
+  recovery produces a positive, defined relative edge-density change.
 - **`AWS S3 Synced (orb-opencv5-vision-2026)`** when the sync metadata qualifies.
-- Exposure, Laplacian sharpness, Canny edge density, saliency, Hough orientation,
-  hex/weight palette swatches, and video motion/continuity when present.
+- Exposure, Laplacian sharpness, Canny edge density, saliency, Hough orientation
+  **and line count**, hex/weight palette swatches, and video motion/continuity
+  when present. A recovery row shows enhanced measurements and signed gains.
 - Action/trigger logs and **Original Reference**, **OpenCV Vision HUD**,
   **CLAHE Shadow Recovery** preview tabs when their artifacts are available.
 
-Production telemetry records original-frame measurements and recovery actions;
-it does **not** compute or log post-CLAHE edge-density gain. The audited corridor
-reference measured approximately **+66.1%** Canny edge-density gain in an
-independent comparison against its stored recovery artifact. That is
-image-dependent, not a universal **+142–184%** claim. Local synthetic benchmark
-gains are separately labeled in `BENCHMARKS.md`.
+Production telemetry now returns **`post_clahe_edge_density`** (percentage),
+**`edge_density_gain_pct`**, **`post_clahe_laplacian_variance`** and
+**`sharpness_gain_pct`** at the root, inside `clahe_recovery`, and in the recovery
+action log, for both images and video keyframes. Canny thresholds remain 80/180;
+Laplacian uses `CV_64F`. Published measurements have two decimals and gains have
+one. Bypassed recovery returns nulls; zero baselines yield an undefined (`null`)
+relative gain instead of infinity. Gains can be negative and are image-dependent.
+
+All three fresh AWS underexposed 1080p runs measured **0.96% → 1.08% edge density
+(+12.5%)** and **20.06 → 28.04 Laplacian variance (+39.8%)** before JPEG encoding.
+The historical corridor audit's **+66.1%** measured a decoded JPEG artifact and
+is not a universal gain or an interchangeable pre-JPEG measurement.
 
 ## 3. Judge instant access and the public Web3 boundary
 
@@ -210,13 +225,22 @@ result with a reserved credit. Cold starts do not blindly release another live
 invocation's reservation. The snapshot ledger is capped at **16 MiB**; the
 repository also supports Postgres for larger workloads.
 
-The October 24 read-only audit found a valid encrypted ledger, three consumed
-reservations with durable results, and no balance/reservation inconsistencies.
-Concurrency/failure handling was exercised through mocked S3/RPC tests, not a
-new production debit. See [Lambda credit persistence](docs/LAMBDA_CREDIT_PERSISTENCE.md).
+The October 24 read-only audit found a valid encrypted ledger and no
+balance/reservation inconsistencies. The subsequent live benchmark created a
+real 10-credit judge session and completed **six real Decode jobs**, ending at
+**4 available / 6 consumed / 0 reserved**. Every job's expected S3 objects were
+verified, including CLAHE artifacts on all underexposed inputs. Concurrency and
+storage-failure handling remain covered by mocked S3/RPC tests rather than a
+destructive production race test. See [Lambda credit persistence](docs/LAMBDA_CREDIT_PERSISTENCE.md).
 
 ## 5. Performance evidence and validation limits
 
+- Fresh AWS arm64 **1920×1080**, three runs per workload, **512 MB Lambda**:
+  standard scene **948.350 ms mean** (646.084–1,439.173 ms), underexposed scene
+  **865.268 ms mean** (838.369–899.963 ms). Corresponding mean upload-to-result
+  times were **6,671.7 ms** and **5,288.8 ms**, including real AI synthesis.
+  These are sequential observations with no verified cold/warm classification,
+  not an SLA or a sub-180 ms result.
 - Historical AWS OpenCV analysis of the **1280×720** corridor reference reported
   **1,578.769 ms** and **2,233.344 ms**. These are individual observations, not
   1080p averages or an SLA.
@@ -226,17 +250,19 @@ new production debit. See [Lambda credit persistence](docs/LAMBDA_CREDIT_PERSIST
 - The recorded local x86_64 AVX2 synthetic **1080p standard-scene mean is
   260.9 ms**; its best run was 166.08 ms. No controlled sub-180 ms 1080p Lambda
   result has been established.
-- The audit used read-only live HTTP/AWS/S3 inspection, temporary local CV work,
-  existing automated tests and deployed-browser replay with intercepted
-  session/job responses. It did not create a new live judge grant, paid AI job,
-  wallet signature or blockchain transaction. Replay verifies frontend behavior,
-  not a fresh production end-to-end purchase/Decode.
+- The original audit used read-only inspection and intercepted browser replay.
+  The later benchmark exercised the ordinary deployed, judge-authenticated Decode
+  pipeline and real S3 persistence/credit settlement, without a debug endpoint or
+  automatic media-POST retries. No wallet purchase, signature or blockchain
+  transaction was made. The earlier local baseline predates the additional
+  recovery measurements; it is not a controlled hardware speedup comparison.
 
-Local regression verification after the health-alias, dependency-pin and
-documentation fixes on October 24: **339 backend tests passed**, with **8
-Postgres integration skips**, and **237 frontend tests passed across 10 files**.
-The existing health test checks HTTP 200 and identical JSON from both aliases.
-These local results do not imply that this revision has been deployed.
+Local regression verification for the recovery-metrics revision: **343 backend
+tests passed**, with **8 Postgres integration skips**, and **244 frontend tests
+passed across 10 files**. The health test checks both aliases; new recovery tests
+cover positive measurements, bypass, zero baselines and video keyframes. UI tests
+cover Hough counts, positive/negative/undefined gains and older result payloads.
+The guarded production frontend build also passed before Lambda deployment.
 
 ## 6. Local preview and deployment references
 

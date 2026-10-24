@@ -987,12 +987,14 @@ export function renderOpenCVTelemetry(cv) {
     return;
   }
   els.resOpencvCard.classList.remove("hidden");
+  const claheActive = Boolean(cv.clahe_applied || cv.clahe_triggered);
+  const recovery = cv.clahe_recovery || cv.color_and_lighting?.clahe_recovery || {};
+  const edgeGain = cv.edge_density_gain_pct ?? recovery.edge_density_gain_pct;
 
   // 1. Header & Benchmark Badges (Measurable Value)
   if (els.resOpencvBadges) {
     els.resOpencvBadges.replaceChildren();
     const fps = cv.effective_fps ?? cv.motion_and_continuity?.effective_fps;
-    const claheActive = Boolean(cv.clahe_applied || cv.clahe_triggered);
     const awsS3 = cv.aws_s3 || null;
     const aws = cv.aws_integration || null;
     const s3Synced = Boolean(awsS3?.synced ?? awsS3?.enabled ?? aws?.synced ?? aws?.enabled);
@@ -1003,6 +1005,8 @@ export function renderOpenCVTelemetry(cv) {
       cv.processing_ms !== undefined ? { text: `Latency: ${Number(cv.processing_ms).toFixed(1)} ms`, highlight: false } : null,
       fps !== undefined ? { text: `Throughput: ${Number(fps).toFixed(1)} FPS`, highlight: false } : null,
       claheActive ? { text: "CLAHE Auto-Recovery: Active", highlight: true } : null,
+      claheActive && Number.isFinite(edgeGain) && edgeGain > 0
+        ? { text: `+${edgeGain.toFixed(1)}% edge gain`, highlight: true } : null,
       s3Bucket ? { text: `AWS S3 Synced (${s3Bucket})`, highlight: true } : null,
     ].filter(Boolean);
     for (const spec of badgeSpecs) {
@@ -1115,10 +1119,24 @@ export function renderOpenCVTelemetry(cv) {
       const label = sg.sharpness_label ?? sg.sharpness_tier;
       const region = sg.saliency_region ?? sg.saliency_center?.composition_zone;
       const lines = sg.dominant_lines ?? sg.structural_lines?.dominant_orientation;
+      const lineCount = sg.structural_lines?.line_count;
+      const lineLabel = Number.isInteger(lineCount) && lineCount >= 0
+        ? `${lines || "unclassified"} (${lineCount} ${lineCount === 1 ? "line" : "lines"})` : lines;
       rows.push([
         "Composition & Focus (cv2.Laplacian / Canny / HoughLinesP)",
-        `Sharpness ${score} (${label}) · edge density ${sg.edge_density_pct}% · saliency: ${region} · lines: ${lines}`,
+        `Sharpness ${score} (${label}) · edge density ${sg.edge_density_pct}% · saliency: ${region} · lines: ${lineLabel}`,
       ]);
+    }
+    const postEdges = cv.post_clahe_edge_density ?? recovery.post_clahe_edge_density;
+    const postSharpness = cv.post_clahe_laplacian_variance ?? recovery.post_clahe_laplacian_variance;
+    const sharpnessGain = cv.sharpness_gain_pct ?? recovery.sharpness_gain_pct;
+    if (claheActive && (Number.isFinite(postEdges) || Number.isFinite(postSharpness))) {
+      const delta = (gain) => Number.isFinite(gain)
+        ? ` (${gain > 0 ? "+" : ""}${gain.toFixed(1)}%)` : " (relative gain unavailable)";
+      const measurements = [];
+      if (Number.isFinite(postEdges)) measurements.push(`Edge density ${postEdges}%${delta(edgeGain)}`);
+      if (Number.isFinite(postSharpness)) measurements.push(`Laplacian variance ${postSharpness}${delta(sharpnessGain)}`);
+      rows.push(["CLAHE Recovery (cv2.Canny / Laplacian)", measurements.join(" · ")]);
     }
     if (mc && mc.dominant_motion) {
       rows.push([

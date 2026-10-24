@@ -6,17 +6,73 @@ The **2026-10-24 read-only verification audit** inspected the existing live
 `orb-opencv5-api` deployment in `us-east-1`, its deployment package, completed
 job artifacts, and HTTP endpoints. These observations are distinct from the
 controlled **local x86_64 synthetic benchmarks** preserved below.
+The enhanced pipeline was subsequently redeployed and exercised through six real
+Decode requests on October 24; the fresh results are recorded next.
 
 | Runtime property | Verified value / evidence |
 | :--- | :--- |
 | Compute | AWS Lambda arm64 (Graviton2); AWS control plane reports `Architectures=["arm64"]`, `State=Active` |
 | Execution model | Python 3.12 **ZIP package**, FastAPI via `Mangum(app, lifespan="auto")`; serverless-synchronous execution |
-| Configuration at audit | 512 MB memory; 120-second execution timeout; last updated `2026-10-22T01:50:19Z` |
+| Configuration | 512 MB memory; 120-second execution timeout; enhanced ZIP deployed `2026-10-24T01:51:18Z` |
 | OpenCV package | **`opencv-python-headless==5.0.0.93`**, verified in the deployed distribution metadata |
 | OpenCV runtime | **`cv2.__version__ == "5.0.0"`** in persisted AWS job telemetry; distribution and runtime version strings differ intentionally |
 | Native architecture | `cv2/cv2.abi3.so` has ELF machine `183` (AArch64); persisted runtime reports `aarch64`, `ARM64`, NEON and FP16 |
 | Actual telemetry badge | `OpenCV 5.0.0 · AWS S3 · ARM64 NEON` |
 | Persistence | `s3://orb-opencv5-vision-2026/orb-jobs/<job_id>/` for diagnostics/job JSON; encrypted conditional-write credit ledger at `orb-credits/ledger-v1.sqlite3` |
+
+### Fresh production AWS 1080p measurements — October 24, 2026
+
+`scripts/benchmark_lambda_opencv.py` submitted **three sequential Decode requests
+per workload** through the live Function URL between **01:51:54 and 01:52:49 UTC**.
+It used the same 1920×1080 fixture generators and default JPEG encoding as the
+local baseline script. Every result reported `aarch64`, `ARM64`, NEON / FP16 and
+OpenCV `5.0.0`. Code SHA-256, input hashes, individual timings and job IDs are
+recorded in [the sanitized evidence log](docs/AWS_OPENCV_BENCHMARK_2026-10-24.json).
+
+| Workload | AWS OpenCV runs (ms) | AWS mean | AWS min–max | Mean upload → result | Historical local x86_64 mean |
+| :--- | :--- | ---: | :--- | ---: | ---: |
+| 1080p standard scene | 1,439.173 / 646.084 / 759.792 | **948.350 ms** | 646.084–1,439.173 ms | 6,671.7 ms | 260.9 ms |
+| 1080p underexposed | 857.472 / 899.963 / 838.369 | **865.268 ms** | 838.369–899.963 ms | 5,288.8 ms | 231.06 ms |
+
+The standard workload bypassed CLAHE. All three underexposed runs reported:
+
+| Production recovery measurement | Original | Enhanced (before JPEG) | Relative gain |
+| :--- | ---: | ---: | ---: |
+| Canny edge density | 0.96% | 1.08% | **+12.5%** |
+| Laplacian variance | 20.06 | 28.04 | **+39.8%** |
+
+The new production fields appear at the telemetry root, in `clahe_recovery`, and
+in the recovery action log. The enhanced BGR image is measured **before lossy
+JPEG encoding**, using the original frame's Canny thresholds (80/180) and
+Laplacian (`CV_64F`). Edge density and variance are published to two decimal
+places; relative gains use those published values and are rounded to one decimal.
+A zero original baseline yields `null` for its percentage gain; bypassed
+recovery yields `null` for all four new fields. Negative gains remain signed.
+
+These are small-sample observations on a **512 MB Lambda**, not cold/warm
+percentiles or an SLA. Container identity was not classified. The historical
+local baseline predates the added recovery measurements; this is not a controlled
+hardware speedup comparison. Neither AWS workload reached sub-180 ms latency.
+OpenCV timing excludes external AI synthesis, network transfer and S3 uploads;
+upload → result timing includes the actual AI-backed request and result retrieval,
+but excludes the subsequent diagnostic-object checks.
+
+All six jobs returned prompts and their expected S3 HUD/telemetry/job-state
+objects; all underexposed jobs also persisted the CLAHE image. A single real
+judge grant started at 10 credits and finished at **4 available / 6 consumed /
+0 reserved**, validating settlement after every result. No wallet purchase or
+blockchain transaction was submitted.
+
+To reproduce (creates a new judge grant and six real, credit-consuming AI jobs):
+
+```powershell
+.\.venv\Scripts\python.exe scripts/benchmark_lambda_opencv.py --iterations 3 --output output/aws-opencv-new-run.json
+```
+
+The output parent must exist and the report filename must be new. The script
+journals attempts and does not automatically retry a media POST. Reports exclude
+tokens, wallet identifiers and signed URLs. The existing Function URL and AWS
+read credentials are required for runtime/S3 verification.
 
 ### Historical AWS image-processing samples
 
@@ -50,11 +106,18 @@ not establish cold/warm container identity, percentiles, load capacity or an SLA
 | Vercel `/` | 200 | 1,862.1 ms | — |
 | Vercel `/?judge=OPENCV2026` | 200 | 1,840.8 ms | — |
 
-At that audit, `/health` returned **404** in 2,955.1 ms. The repository now
-registers `/health` as an alias of `/api/health`, using the same handler and
-response. This code change requires deployment before claiming a live root-path
-200. Neither health route adds architecture/package metadata to its payload;
-those facts were independently verified above. Readiness checks local upload
+At the earlier audit, `/health` returned **404** in 2,955.1 ms. After the enhanced
+deployment, both health aliases returned **200 with identical JSON**:
+
+| Post-deployment request | HTTP | Round trip |
+| :--- | ---: | ---: |
+| `/health` | 200 | 5,482.4 ms |
+| `/api/health` | 200 | 229.0 ms |
+| `/api/ready` | 200 | 231.5 ms |
+
+These are individual sequential observations, not an isolated cold-start test.
+Neither health route adds architecture/package metadata to its payload; those
+facts were independently verified above. Readiness checks local upload
 prerequisites, not a paid AI invocation or an S3 write.
 
 ### Audited CLAHE result on the corridor reference
@@ -67,11 +130,11 @@ Independent before/after measurements against the existing S3 recovery artifact:
 | Canny edge density | 8.35026% | 13.87012% |
 | Laplacian variance | 421.574 | 931.152 |
 
-The relative Canny edge-density gain is approximately **+66.1%** for this
-reference, using `(after / before - 1) * 100`. Production telemetry records the
-original measurements and the recovery action; it does **not** calculate or
-return post-recovery gain fields. Gains are image-dependent. No universal
-**+142–184%** recovery claim is supported.
+The historical relative Canny edge-density gain is approximately **+66.1%** for
+this reference, using `(after / before - 1) * 100`. This audit measured the decoded
+JPEG artifact; the new production fields measure the uncompressed enhanced image
+and may differ. Production now returns the four post-recovery metrics documented
+above. Gains are image-dependent; no universal **+142–184%** claim is supported.
 
 ---
 
@@ -118,7 +181,7 @@ Evaluated on a **30-frame 720p (`1280x720`)** synthetic motion sequence containi
 
 ## 3. Local Synthetic CLAHE Shadow Recovery Measurements
 
-When `analyze_image_cv()` or `analyze_video_cv()` perceives an underexposed (`mean_luminance < 60.0`) or compressed-contrast (`contrast_std < 32.0`) frame, the Agentic Vision Loop triggers `cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))` on the LAB luminance channel (`L`). Orb AI can use both the original and recovered frame alongside pixel-derived telemetry. The benchmark script separately computes the following before/after values on its synthetic underexposed fixture; these are not production telemetry gain fields:
+When `analyze_image_cv()` or `analyze_video_cv()` perceives an underexposed (`mean_luminance < 60.0`) or compressed-contrast (`contrast_std < 32.0`) frame, the Agentic Vision Loop triggers `cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))` on the LAB luminance channel (`L`). Orb AI can use both the original and recovered frame alongside pixel-derived telemetry. The historical local benchmark below measured the decoded JPEG output. Its figures differ from the new pre-JPEG production measurements above:
 
 | Visual Quality Metric | Original Underexposed Input | After OpenCV CLAHE Recovery | Measured Delta / Gain |
 | :--- | ---: | ---: | :--- |

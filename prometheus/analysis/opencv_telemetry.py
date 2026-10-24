@@ -125,6 +125,7 @@ class OpenCVTelemetry:
     clahe_enhanced_path: Path | None = None
     hud_overlay_path: Path | None = None
     aws_integration: dict[str, Any] = field(default_factory=dict)
+    clahe_recovery: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         fps = (
@@ -160,7 +161,13 @@ class OpenCVTelemetry:
             "cv_grounding_brief": self.cv_grounding_brief,
             "clahe_triggered": clahe_active,
             "clahe_applied": clahe_active,
+            "clahe_recovery": self.clahe_recovery,
         }
+        for key in (
+            "post_clahe_edge_density", "edge_density_gain_pct",
+            "post_clahe_laplacian_variance", "sharpness_gain_pct",
+        ):
+            payload[key] = self.clahe_recovery.get(key) if self.clahe_recovery else None
         if self.clahe_enhanced_path is not None:
             payload["clahe_artifact"] = self.clahe_enhanced_path.name
         if self.hud_overlay_path is not None:
@@ -256,19 +263,24 @@ def _color_and_lighting_metrics(bgr: np.ndarray) -> dict[str, Any]:
     }
 
 
+def _focus_and_edges(gray: np.ndarray) -> tuple[float, float, np.ndarray]:
+    """Shared measurement parameters for original and recovered references."""
+    variance = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    edges = cv2.Canny(gray, 80, 180)
+    density = round(float(np.count_nonzero(edges)) / float(max(1, gray.size)) * 100.0, 2)
+    return variance, density, edges
+
+
 def _sharpness_and_geometry_metrics(bgr: np.ndarray) -> dict[str, Any]:
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape[:2]
-    laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    laplacian_var, edge_density_pct, edges = _focus_and_edges(gray)
     if laplacian_var >= 180.0:
         sharpness_tier = "crisp/high-detail"
     elif laplacian_var >= BLUR_SHARPNESS_THRESHOLD:
         sharpness_tier = "moderate-focus"
     else:
         sharpness_tier = "soft/motion-blurred"
-
-    edges = cv2.Canny(gray, 80, 180)
-    edge_density_pct = round(float(np.count_nonzero(edges)) / float(max(1, h * w)) * 100.0, 2)
 
     moments = cv2.moments(edges)
     if moments["m00"] > 0:
@@ -348,7 +360,9 @@ def _sharpness_and_geometry_metrics(bgr: np.ndarray) -> dict[str, Any]:
     }
 
 
-def _apply_clahe_recovery(bgr: np.ndarray, output_dir: Path) -> Path:
+def _apply_clahe_recovery(
+    bgr: np.ndarray, output_dir: Path, original_geometry: dict[str, Any],
+) -> tuple[Path, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
     l_chan, a_chan, b_chan = cv2.split(lab)
@@ -356,12 +370,26 @@ def _apply_clahe_recovery(bgr: np.ndarray, output_dir: Path) -> Path:
     l_enhanced = clahe.apply(l_chan)
     merged = cv2.merge((l_enhanced, a_chan, b_chan))
     enhanced_bgr = cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+    variance, density, _ = _focus_and_edges(cv2.cvtColor(enhanced_bgr, cv2.COLOR_BGR2GRAY))
+    variance = round(variance, 2)
+    original_density = original_geometry["edge_density_pct"]
+    original_variance = original_geometry["laplacian_sharpness"]
+    recovery = {
+        "measurement_stage": "before_jpeg_encoding",
+        "original_edge_density": original_density,
+        "original_laplacian_variance": original_variance,
+        "post_clahe_edge_density": density,
+        # A zero baseline has no defined relative percentage; never emit infinity.
+        "edge_density_gain_pct": round((density / original_density - 1) * 100, 1) if original_density > 0 else None,
+        "post_clahe_laplacian_variance": variance,
+        "sharpness_gain_pct": round((variance / original_variance - 1) * 100, 1) if original_variance > 0 else None,
+    }
     out_path = output_dir / "opencv_clahe_enhanced.jpg"
     ok, encoded = cv2.imencode(".jpg", enhanced_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
     if not ok:
         raise RuntimeError("OpenCV failed to encode CLAHE enhanced image.")
     out_path.write_bytes(encoded.tobytes())
-    return out_path
+    return out_path, recovery
 
 
 def _render_hud_overlay(
@@ -600,11 +628,12 @@ def analyze_image_cv(image_path: Path | str, output_dir: Path | str | None = Non
     geometry = _sharpness_and_geometry_metrics(bgr)
     actions: list[dict[str, Any]] = []
     clahe_path: Path | None = None
+    recovery: dict[str, Any] | None = None
 
     mean_lum = color_lighting["mean_luminance"]
     contrast_std = color_lighting["contrast_std"]
     if mean_lum < CLAHE_LUMINANCE_THRESHOLD or contrast_std < CLAHE_CONTRAST_THRESHOLD:
-        clahe_path = _apply_clahe_recovery(bgr, target_dir)
+        clahe_path, recovery = _apply_clahe_recovery(bgr, target_dir, geometry)
         trigger_reason = (
             f"mean_luminance={mean_lum} (<{CLAHE_LUMINANCE_THRESHOLD})"
             if mean_lum < CLAHE_LUMINANCE_THRESHOLD
@@ -617,6 +646,7 @@ def analyze_image_cv(image_path: Path | str, output_dir: Path | str | None = Non
             "decision": "Autonomous CLAHE shadow/contrast recovery activated",
             "action": f"Equalized LAB L-channel (clipLimit=2.5, grid=8x8) and attached {clahe_path.name} alongside original reference",
             "artifact": clahe_path.name,
+            "clahe_recovery": recovery,
         })
     else:
         actions.append({
@@ -653,6 +683,7 @@ def analyze_image_cv(image_path: Path | str, output_dir: Path | str | None = Non
         cv_grounding_brief=brief,
         clahe_enhanced_path=clahe_path,
         hud_overlay_path=hud_path,
+        clahe_recovery=recovery,
     )
 
 
@@ -774,10 +805,11 @@ def analyze_video_cv(
     geometry = _sharpness_and_geometry_metrics(primary_bgr)
 
     clahe_path: Path | None = None
+    recovery: dict[str, Any] | None = None
     mean_lum = color_lighting["mean_luminance"]
     contrast_std = color_lighting["contrast_std"]
     if mean_lum < CLAHE_LUMINANCE_THRESHOLD or contrast_std < CLAHE_CONTRAST_THRESHOLD:
-        clahe_path = _apply_clahe_recovery(primary_bgr, target_dir)
+        clahe_path, recovery = _apply_clahe_recovery(primary_bgr, target_dir, geometry)
         actions.append({
             "step": "perception->decision->action",
             "type": "clahe_shadow_contrast_recovery",
@@ -785,6 +817,7 @@ def analyze_video_cv(
             "decision": "Autonomous CLAHE shadow/contrast recovery activated on primary keyframe",
             "action": f"Saved equalized keyframe {clahe_path.name} in run directory",
             "artifact": clahe_path.name,
+            "clahe_recovery": recovery,
         })
 
     # 2. Dense Optical Flow (Farnebäck) + HSV Histogram Continuity:
@@ -900,4 +933,5 @@ def analyze_video_cv(
         cv_grounding_brief=brief,
         clahe_enhanced_path=clahe_path,
         hud_overlay_path=hud_path,
+        clahe_recovery=recovery,
     )

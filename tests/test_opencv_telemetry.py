@@ -107,6 +107,62 @@ def test_video_optical_flow_detects_horizontal_pan_and_ranks_keyframes(tmp_path:
     assert ranking[-1]["file"] == "frame_003.png"
     assert ranking[0]["sharpness"] > ranking[-1]["sharpness"]
     assert any(a["type"] == "sharpness_gated_keyframe_ranking" for a in payload["agentic_actions"])
+    assert payload["clahe_applied"] is True
+    assert payload["post_clahe_laplacian_variance"] == payload["clahe_recovery"]["post_clahe_laplacian_variance"]
+    assert payload["post_clahe_edge_density"] >= 0
+
+
+def test_clahe_recovery_reports_measured_positive_gains(tmp_path: Path):
+    # Dark texture has some edges before recovery and reveals more after CLAHE.
+    gray = np.random.default_rng(42).integers(10, 60, (128, 128), dtype=np.uint8)
+    image = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    path = tmp_path / "dark_texture.png"
+    cv2.imwrite(str(path), image)
+    payload = analyze_image_cv(path, tmp_path / "result").to_dict()
+    assert payload["color_and_lighting"]["mean_luminance"] < 60
+    assert payload["clahe_applied"] is True
+    recovery = payload["clahe_recovery"]
+    assert recovery["measurement_stage"] == "before_jpeg_encoding"
+
+    # Independently measure the enhanced, uncompressed reference using the API contract.
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    lab[:, :, 0] = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(lab[:, :, 0])
+    recovered_gray = cv2.cvtColor(cv2.cvtColor(lab, cv2.COLOR_LAB2BGR), cv2.COLOR_BGR2GRAY)
+    expected_edges = round(np.count_nonzero(cv2.Canny(recovered_gray, 80, 180)) / gray.size * 100, 2)
+    expected_variance = round(float(cv2.Laplacian(recovered_gray, cv2.CV_64F).var()), 2)
+    geometry = payload["sharpness_and_geometry"]
+    assert payload["post_clahe_edge_density"] == expected_edges > geometry["edge_density_pct"] > 0
+    assert payload["post_clahe_laplacian_variance"] == expected_variance > geometry["laplacian_sharpness"] > 0
+    assert payload["edge_density_gain_pct"] == round((expected_edges / geometry["edge_density_pct"] - 1) * 100, 1) > 0
+    assert payload["sharpness_gain_pct"] == round((expected_variance / geometry["laplacian_sharpness"] - 1) * 100, 1) > 0
+    for key in ("post_clahe_edge_density", "edge_density_gain_pct", "post_clahe_laplacian_variance", "sharpness_gain_pct"):
+        assert payload[key] == recovery[key]
+    action = next(a for a in payload["agentic_actions"] if a["type"] == "clahe_shadow_contrast_recovery")
+    assert action["clahe_recovery"] == recovery
+
+
+@pytest.mark.parametrize("kind", ["balanced", "flat-dark", "flat-bright"])
+def test_recovery_bypass_and_zero_baselines_are_json_safe(tmp_path: Path, kind: str):
+    gray = np.tile(np.linspace(20, 240, 128, dtype=np.uint8), (128, 1)) if kind == "balanced" else np.full(
+        (128, 128), 0 if kind == "flat-dark" else 140, dtype=np.uint8)
+    path = tmp_path / "reference.png"
+    cv2.imwrite(str(path), cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
+    payload = analyze_image_cv(path, tmp_path / "result").to_dict()
+    json.dumps(payload, allow_nan=False)
+    if kind == "balanced":
+        assert payload["clahe_applied"] is False
+        assert payload["clahe_recovery"] is None
+        assert payload["post_clahe_edge_density"] is None
+        assert payload["post_clahe_laplacian_variance"] is None
+    else:
+        assert payload["clahe_applied"] is True
+        assert payload["post_clahe_edge_density"] == 0
+        assert payload["post_clahe_laplacian_variance"] == 0
+        if kind == "flat-bright":
+            assert payload["color_and_lighting"]["mean_luminance"] >= 60
+            assert payload["color_and_lighting"]["contrast_std"] < 32
+    assert payload["edge_density_gain_pct"] is None
+    assert payload["sharpness_gain_pct"] is None
 
 
 def test_orb_ai_service_attaches_opencv_telemetry_and_clahe_frame(tmp_path: Path):
@@ -253,4 +309,3 @@ def test_aws_s3_artifact_sync_and_telemetry_metadata(tmp_path: Path, monkeypatch
     fake_s3.get_object.return_value = {"Body": io.BytesIO(b"fake-jpeg-bytes")}
     frame_res = load_serverless_frame_from_s3("job999", "opencv_hud_overlay.jpg", s3_client=fake_s3)
     assert frame_res == (b"fake-jpeg-bytes", "image/jpeg")
-
