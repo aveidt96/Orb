@@ -344,7 +344,7 @@ svg { stroke-linecap: round; stroke-linejoin: round; }
   .brand-icon { width: 39px; height: 42px; }
   .brand-icon .orb-mark { width: 44px; height: 44px; }
   .wordmark { font-size: 26px; }
-  .header-actions { gap: 5px; }
+  .header-actions { gap: 5px; max-width: 100%; flex-wrap: wrap; justify-content: flex-end; }
   .header-judge, .header-wallet { min-height: 44px; padding: 8px 9px; gap: 6px; font-size: 11px; border-radius: 13px; }
   .header-wallet::before { width: 13px; height: 11px; }
   .header-credits { gap: 5px; min-height: 44px; padding: 5px 8px; border-radius: 13px; }

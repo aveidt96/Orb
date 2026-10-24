@@ -267,6 +267,8 @@ cover positive measurements, bypass, zero baselines and video keyframes. UI test
 cover Hough counts, positive/negative/undefined gains and older result payloads.
 Two additional UI regressions verify original image/video previews when Lambda's
 temporary source endpoint is unavailable, including URL cleanup and job isolation.
+Mobile header actions wrap so judge, wallet, credits and menu controls remain
+within the viewport when all are visible.
 The guarded production frontend build also passed, including the preview fix.
 
 ## 6. Local preview and deployment references
