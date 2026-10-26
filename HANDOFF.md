@@ -1907,3 +1907,21 @@ a temporary process-only model override described below.
   matching judge link true; both methods enabled, ledger_storage=s3, private/
   no-store, exact production Vercel CORS. Unauthenticated purchase routes: 401.
   These probes created no sessions, grants, transactions or AI jobs.
+
+
+## 2026-10-26 — Update "About Orb" modal narrative for OpenCV AI Competition 2026
+
+- Updated `#about-panel` in `web/index.html` to align with the OpenCV AI Competition 2026 narrative while preserving the exact DOM structure, CSS classes, accessibility roles, and 2×2 `.about-stages` grid:
+  1. Hero Card: "Deterministic OpenCV 5.0 perception meets grounded multimodal reasoning", emphasizing native execution on AWS Graviton2 (arm64) and Amazon S3.
+  2. "Why Orb exists": Explains that foundation models hallucinate spatial geometry or miss fine details in low-light/shadowed frames, and highlights OpenCV 5.0 perception, CIE LAB CLAHE recovery, and the interactive Vision HUD.
+  3. Four Stage Cards:
+     - Card 1 ("Decode · understand"): Telemetry extraction (Canny edges, Hough vectors, Laplacian focus, LAB luminance, RGB clusters, Farnebäck optical flow), autonomous CLAHE recovery, and grounded scene analysis.
+     - Card 2 ("Compose · build"): Generation instructions anchored in deterministic OpenCV reference primitives.
+     - Card 3 ("Enhance · refine"): Structurally grounded generation specifications backed by photometric and compositional cues.
+     - Card 4 ("Create · realize" + Coming soon): Closed-loop generative studio guided by OpenCV control layers with automated post-generation verification.
+  4. "The bigger picture": Perceive with OpenCV 5.0 → evaluate visual quality → autonomously remediate in CIE LAB space → synthesize grounded insights.
+  5. Footer Note: Powered by OpenCV 5.0.0.93 on serverless AWS Lambda Graviton2 (arm64) with Amazon S3 artifact streaming.
+- Updated unit test assertions in `web/app.test.js` to match the updated About modal content.
+- Verified test suite: all 53 `web/app.test.js` tests passed, full suite passed (246 frontend tests across 10 files).
+- Production build: `npm run build` completed cleanly, updating `web_dist/`.
+- Regenerated clean submission archive `orb-submission-source.zip` (~342 KB).

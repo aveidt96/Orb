@@ -390,7 +390,7 @@ describe("Orb frontend", () => {
     document.getElementById("menu-about").click();
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(document.getElementById("about-panel").classList.contains("hidden")).toBe(false);
-    expect(document.getElementById("about-panel").textContent).toContain("visual intelligence and creative prompting");
+    expect(document.getElementById("about-panel").textContent).toContain("autonomous visual intelligence and creative analysis");
     document.getElementById("about-close").click();
     toggle.click();
     document.getElementById("menu-wallet").click();
@@ -398,7 +398,7 @@ describe("Orb frontend", () => {
     expect(document.getElementById("wallet-panel").textContent).toContain("TESTNET ONLY");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(document.getElementById("wallet-panel").classList.contains("hidden")).toBe(true);
-    expect(document.getElementById("about-panel").textContent).toContain("See something → understand it");
+    expect(document.getElementById("about-panel").textContent).toContain("Perceive with OpenCV 5.0 → evaluate visual quality");
     expect(document.getElementById("about-panel").textContent).toContain("Arbitrum Sepolia testnet credits");
     expect(document.getElementById("about-panel").textContent).toContain("Create · realize");
     document.getElementById("about-close").click();
